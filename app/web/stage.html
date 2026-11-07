@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AOverlay Hub - Stage</title>
+<!--
+  AOverlay Hub stage: the one page OBS shows. Every overlay of one profile is drawn inside it.
+  Copyright (c) 2026 Aosabi 「青錆竜也」 aosabi@pm.me. All Rights Reserved. See LICENSE.txt.
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  #canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0; overflow: hidden; }
+  .box { position: absolute; overflow: hidden; box-sizing: border-box; transition: opacity 0.6s ease; }
+  .box.autohidden { opacity: 0 !important; }
+  .box > iframe { border: 0; background: transparent; transform-origin: 0 0; position: absolute; left: 0; top: 0; }
+  .placeholder { width: 100%; height: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 6px; text-align: center; padding: 10px; border: 2px dashed rgba(124, 92, 255, 0.85);
+    background: rgba(124, 92, 255, 0.12); border-radius: 8px; color: #fff; font: 600 20px "Segoe UI", Arial, sans-serif; text-shadow: 0 1px 3px #000; }
+  .placeholder small { font-weight: 400; font-size: 14px; opacity: 0.85; }
+
+  /* ---- layered text: shadow, outline and letters stacked on top of each other ---- */
+  .tx { display: inline-grid; vertical-align: middle; }
+  .tx > span { grid-area: 1 / 1; white-space: inherit; position: relative; }
+  /* blur and offsets lift a layer above plain ones, so the order is set explicitly: shadow, then outline, then letters */
+  .tx > .sh { z-index: 0; } .tx > .ol { z-index: 1; } .tx > .fi { z-index: 2; }
+  .tx { position: relative; z-index: 0; }
+  .tx .fi { opacity: var(--fiop, 1); }
+  .tx .ol { -webkit-text-stroke: var(--olw, 0) var(--olc, #000); filter: var(--olblur, none); opacity: var(--olop, 1); }
+  .tx .ol, .tx .ol * { color: transparent !important; }
+  .tx .sh { -webkit-text-stroke: var(--shw, 0) var(--shc, #000); transform: translate(var(--shx, 0), var(--shy, 0)); filter: var(--shblur, none); opacity: var(--shop, 1); }
+  .tx .sh, .tx .sh * { color: var(--shc, #000) !important; }
+  .tx .ol img, .tx .sh img { visibility: hidden; }
+  .no-ol .tx .ol, .no-sh .tx .sh { display: none; }
+
+  /* ---- strips that scroll ---- */
+  .vp { position: relative; overflow: hidden; flex: 1; min-width: 0; min-height: 0; }
+  .track { position: absolute; left: 0; top: 0; display: flex; will-change: transform; transition: opacity 0.25s ease; }
+  .track.h { flex-direction: row; align-items: center; height: 100%; white-space: nowrap; }
+  .track.v { flex-direction: column; align-items: stretch; width: 100%; }
+
+  /* ---- support ticker ---- */
+  .tk { display: flex; width: 100%; height: 100%; box-sizing: border-box; overflow: hidden; border: 1px solid rgba(255,255,255,0.08); }
+  .tk.h { flex-direction: row; align-items: stretch; }
+  .tk.v { flex-direction: column; }
+  .tk .label { position: relative; flex: none; display: flex; align-items: center; justify-content: center; gap: 0.45em; padding: 0 1.1em; letter-spacing: 0.08em; white-space: nowrap; }
+  .tk.h .label { border-right: 1px solid rgba(255,255,255,0.08); }
+  .tk.v .label { padding: 0.7em 1em; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  .tk .label::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 4px; background: var(--stripe); }
+  .tk.h .vp { -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 24px, #000 calc(100% - 24px), transparent 100%); }
+  .tk.v .vp { -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%); }
+  .tk .item { flex: none; display: flex; align-items: center; gap: 0.55em; box-sizing: border-box; border-left: 3px solid; border-radius: 6px; white-space: nowrap; }
+  .tk.h .item { height: 2.25em; padding: 0 0.9em 0 0.65em; }
+  .tk.v .item { min-height: 2.1em; padding: 0.35em 0.8em 0.35em 0.65em; }
+  .tk.v .item .amount { margin-left: auto; }
+  .tk .name { overflow: hidden; text-overflow: ellipsis; }
+  .tk .badge { flex: none; width: 1.25em; height: 1.25em; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 0.75em; font-weight: 900; line-height: 1; color: #0b0f14; font-family: "Segoe UI", Arial, sans-serif; overflow: hidden; }
+  .tk .badge.light { color: #fff; }
+  .tk .badge img { width: 100%; height: 100%; object-fit: contain; }
+  .tk .item.fresh { animation: aoh-glow 1.1s ease-in-out var(--glow-n, 5); }
+  @keyframes aoh-glow { 0%, 100% { box-shadow: 0 0 0 transparent; } 50% { box-shadow: 0 0 14px var(--glow, #3ddc84); } }
+
+  /* ---- now playing ---- */
+  .np { display: flex; width: 100%; height: 100%; box-sizing: border-box; overflow: hidden; align-items: center; gap: 0.5em; padding: 0 0.7em; }
+  .np.v { flex-direction: column; padding: 0.7em 0; }
+  .np .lbl { flex: none; white-space: nowrap; }
+  .np .song { white-space: nowrap; flex: none; }
+  .np.v .lbl, .np.v .song { writing-mode: vertical-rl; }
+  .np .vp { align-self: stretch; }
+  .np.h .track { align-items: center; }
+  .np.v .track { flex-direction: column; align-items: center; width: 100%; }
+  .idle-hidden { visibility: hidden; }
+
+  /* ---- chat ---- */
+  .chat { position: absolute; inset: 0; display: flex; padding: 8px; box-sizing: border-box; overflow: hidden; }
+  .chat.stack { flex-direction: column; justify-content: flex-end; align-items: flex-start; }
+  .chat.stack.top { flex-direction: column-reverse; }
+  .chat.line { flex-direction: row; align-items: center; justify-content: flex-end; white-space: nowrap; }
+  .chat.line.top { flex-direction: row-reverse; }
+  .chat .msg { padding: 0.28em 0.5em; line-height: 1.35; word-wrap: break-word; overflow-wrap: anywhere; animation: aoh-pop 0.25s ease-out; transition: opacity 0.6s ease, transform 0.6s ease; flex: none; max-width: 100%; box-sizing: border-box; }
+  .chat.line .msg { white-space: nowrap; max-width: none; }
+  .chat .msg.fading { opacity: 0; transform: translateX(-12px); }
+  .chat .cname { font-weight: 700; margin-right: 0.35em; }
+  .chat .dot { display: inline-block; width: 0.55em; height: 0.55em; border-radius: 50%; margin-right: 0.35em; vertical-align: middle; box-shadow: 0 0 0 2px rgba(0,0,0,0.5); }
+  .chat .picon { width: 1.05em; height: 1.05em; vertical-align: middle; margin-right: 0.35em; object-fit: contain; border-radius: 3px; }
+  .chat .avatar { width: 1.35em; height: 1.35em; border-radius: 50%; object-fit: cover; vertical-align: middle; margin-right: 0.3em; background: rgba(255,255,255,0.15); }
+  .chat .tbadge { display: inline-block; font-size: 0.55em; font-weight: 700; padding: 1px 5px; border-radius: 4px; margin-right: 4px; vertical-align: middle; background: rgba(255,255,255,0.2); text-transform: uppercase; }
+  .chat .ibadge { height: 1em; vertical-align: middle; margin-right: 4px; }
+  .chat .emote { height: 1.6em; vertical-align: middle; }
+  @keyframes aoh-pop { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  /* ---- emote combo ---- */
+  .combo { position: absolute; inset: 0; display: flex; box-sizing: border-box; padding: 6px; overflow: hidden; }
+  .combo.up { flex-direction: column-reverse; align-items: flex-start; }
+  .combo.down { flex-direction: column; align-items: flex-start; }
+  .combo.right { flex-direction: row; align-items: flex-start; flex-wrap: wrap; }
+  .combo.left { flex-direction: row-reverse; align-items: flex-start; flex-wrap: wrap; }
+  .combo .row { display: flex; align-items: center; gap: 12px; padding: 6px 14px; box-sizing: border-box; flex: none; animation: aoh-pop 0.25s ease-out; }
+  .combo .row img { object-fit: contain; }
+  .combo .bump { animation: aoh-bump 0.25s ease-out; }
+  @keyframes aoh-bump { 0% { transform: scale(1); } 40% { transform: scale(1.3); } 100% { transform: scale(1); } }
+
+  /* ---- emote rain ---- */
+  .rain { position: absolute; inset: 0; overflow: hidden; }
+  .rain img { position: absolute; left: 0; top: 0; object-fit: contain; will-change: transform, opacity; pointer-events: none; }
+
+  /* ---- banner ---- */
+  .bn { position: absolute; inset: 0; }
+  .bn .gfx { position: absolute; inset: 0; }
+  .bn .gfx svg { width: 100%; height: 100%; display: block; }
+  .bn .gfx img { width: 100%; height: 100%; display: block; }
+  .bn .words { position: absolute; inset: 0; display: flex; align-items: center; box-sizing: border-box; overflow: hidden; }
+  .bn .msgtx { transition: opacity 0.5s ease; white-space: nowrap; }
+  .bn .msgtx.out { opacity: 0; }
+
+  #debug { position: fixed; left: 4px; bottom: 4px; max-width: 60vw; max-height: 40vh; overflow: auto; background: rgba(0,0,0,0.85);
+    color: #b8ffcf; font: 12px/1.35 Consolas, monospace; padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; display: none; z-index: 99999; }
+</style>
+</head>
+<body>
+<div id="canvas"></div>
+<div id="debug"></div>
+<script src="/web/common.js"></script>
+<script>
+(function () {
+  "use strict";
+  var Q = new URLSearchParams(location.search);
+  var PREVIEW = Q.get("preview") === "1";
+  var SHOW_WIDGETS = Q.get("widgets") === "1";
+  var PROFILE = Q.get("profile") || "";
+  // Only copies running inside OBS talk to Streamer.bot and Kick and report support, so events count once.
+  var LIVE = !PREVIEW && (!!window.obsstudio || Q.get("live") === "1");
+  var DEBUG = Q.get("debug") === "1";
+
+  var canvasEl = document.getElementById("canvas");
+  var debugEl = document.getElementById("debug");
+  if (DEBUG) debugEl.style.display = "block";
+  var dbgLines = [];
+  function log(m) {
+    if (!DEBUG) return;
+    dbgLines.push(new Date().toLocaleTimeString() + "  " + m);
+    if (dbgLines.length > 80) dbgLines.shift();
+    debugEl.textContent = dbgLines.join("\n");
+    debugEl.scrollTop = debugEl.scrollHeight;
+  }
+  function api(path, body) {
+    var opt = { cache: "no-store" };
+    if (body !== undefined) { opt.method = "POST"; opt.headers = { "Content-Type": "application/json", "X-AOH": "1" }; opt.body = JSON.stringify(body); }
+    return fetch(path, opt).then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
+  }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function str(v) { return (typeof v === "string" && v.trim() !== "") ? v.trim() : null; }
+  function firstStr() { for (var i = 0; i < arguments.length; i++) { var s = str(arguments[i]); if (s) return s; } return null; }
+  function toNum(v) {
+    if (typeof v === "number" && isFinite(v)) return v;
+    if (typeof v === "string" && v.trim() !== "" && isFinite(Number(v))) return Number(v);
+    return null;
+  }
+  function firstNum() { for (var i = 0; i < arguments.length; i++) { var n = toNum(arguments[i]); if (n !== null) return n; } return null; }
+  function get(o, p) { return AOH.getPath(o, p); }
+  function lower(s) { return String(s || "").toLowerCase(); }
+  function nameSet(text) { var s = {}; AOH.listOf(text).forEach(function (n) { s[lower(n).replace(/^@/, "")] = true; }); return s; }
+  function safeUrl(u) { u = String(u || ""); return /^(https:\/\/|\/uploads\/|data:image\/)/i.test(u) ? esc(u) : ""; }
+  function safeColor(c) { c = String(c || ""); if (/^[0-9a-f]{6}$/i.test(c)) c = "#" + c; return /^#[0-9a-f]{3,8}$/i.test(c) ? c : ""; }
+
+  /* =====================================================================
+     Layered text
+     ===================================================================== */
+  // Sets the text style of a container; everything made with layered() inside it uses it.
+  function applyText(el, st) {
+    st = AOH.textStyle(st);
+    el.style.fontFamily = AOH.fontStack(st.font);
+    el.style.fontSize = st.size + "px";
+    el.style.fontWeight = st.bold ? "700" : "400";
+    el.style.fontStyle = st.italic ? "italic" : "normal";
+    el.style.color = st.color;
+    el.style.setProperty("--fiop", String(1 - st.see / 100));
+    el.style.setProperty("--olw", (st.outlineWidth * 2) + "px");
+    el.style.setProperty("--olc", st.outlineColor);
+    el.style.setProperty("--olblur", st.outlineFade > 0 ? "blur(" + st.outlineFade + "px)" : "none");
+    el.style.setProperty("--olop", String(1 - st.outlineSee / 100));
+    var a = (st.shadowAngle || 0) * Math.PI / 180;
+    el.style.setProperty("--shx", (Math.cos(a) * st.shadowDistance).toFixed(2) + "px");
+    el.style.setProperty("--shy", (Math.sin(a) * st.shadowDistance).toFixed(2) + "px");
+    el.style.setProperty("--shc", st.shadowColor);
+    el.style.setProperty("--shw", st.outline ? (st.outlineWidth * 2) + "px" : "0px");
+    el.style.setProperty("--shblur", st.shadowFade > 0 ? "blur(" + (st.shadowFade / 2) + "px)" : "none");
+    el.style.setProperty("--shop", String(1 - st.shadowSee / 100));
+    el.classList.toggle("no-ol", !st.outline);
+    el.classList.toggle("no-sh", !st.shadow);
+  }
+  // Text (as HTML) drawn three times: shadow, outline and letters. "color" overrides the letters' colour.
+  function layered(html, color, cls) {
+    var t = document.createElement("span");
+    t.className = "tx" + (cls ? " " + cls : "");
+    t.innerHTML = '<span class="sh">' + html + '</span><span class="ol">' + html + '</span><span class="fi"' + (color ? ' style="color:' + esc(color) + '"' : "") + ">" + html + "</span>";
+    return t;
+  }
+
+  /* =====================================================================
+     State from the helper
+     ===================================================================== */
+  var cfg = AOH.normalizeConfig({});
+  var profile = cfg.profiles[0];
+  var cfgVer = -1, supVer = -1, evSeq = -1;
+  var support = { list: [], totals: null, streamStart: 0 };
+  var modules = {};
+
+  function fitCanvas() {
+    var cw = cfg.canvas.w || 1920, ch = cfg.canvas.h || 1080;
+    canvasEl.style.width = cw + "px"; canvasEl.style.height = ch + "px";
+    var s = window.innerWidth / cw;
+    if (!isFinite(s) || s <= 0) s = 1;
+    canvasEl.style.transform = "scale(" + s + ")";
+  }
+  window.addEventListener("resize", function () { fitCanvas(); eachAll(function (m) { if (m.mod.resize) m.mod.resize(); }); });
+  function eachAll(fn) { Object.keys(modules).forEach(function (id) { if (modules[id].mod) fn(modules[id]); }); }
+  function eachModule(type, fn) { eachAll(function (m) { if (m.o.type === type) fn(m.mod, m.o); }); }
+
+  function applyConfig(newCfg) {
+    cfg = AOH.normalizeConfig(newCfg);
+    profile = AOH.profileById(cfg, PROFILE);
+    fitCanvas();
+    var seen = {};
+    profile.overlays.forEach(function (o, index) {
+      seen[o.id] = true;
+      var m = modules[o.id];
+      var json = JSON.stringify(o.settings);
+      if (m && m.o.type !== o.type) { destroy(o.id); m = null; }
+      if (!m) {
+        var el = document.createElement("div");
+        el.className = "box"; el.id = "box-" + o.id;
+        canvasEl.appendChild(el);
+        m = modules[o.id] = { o: o, el: el, json: null, mod: null };
+      }
+      var e = m.el;
+      e.style.left = o.x + "px"; e.style.top = o.y + "px"; e.style.width = o.w + "px"; e.style.height = o.h + "px";
+      e.style.opacity = o.opacity; e.style.zIndex = String(index + 1);
+      e.style.display = o.visible ? "" : "none";
+      var sizeChanged = m.o.w !== o.w || m.o.h !== o.h;
+      m.o = o;
+      if (!m.mod) { m.mod = MODULES[o.type](e, o); m.json = json; }
+      else if (m.json !== json) { m.mod.update(o); m.json = json; }
+      else if (sizeChanged && m.mod.resize) m.mod.resize();
+    });
+    Object.keys(modules).forEach(function (id) { if (!seen[id]) destroy(id); });
+    if (LIVE) { SB.configure(); KICK.configure(); }
+  }
+  function destroy(id) {
+    var m = modules[id]; if (!m) return;
+    try { if (m.mod && m.mod.destroy) m.mod.destroy(); } catch (e) {}
+    m.el.remove(); delete modules[id];
+  }
+
+  var pollTimer = null;
+  function poll() {
+    clearTimeout(pollTimer);
+    api("/api/poll?v=" + cfgVer + "&s=" + supVer + "&e=" + evSeq + (LIVE ? "&live=1" : ""))
+      .then(function (r) {
+        if (r.config !== undefined && r.v !== cfgVer) { cfgVer = r.v; applyConfig(r.config); }
+        if (r.support !== undefined && r.s !== supVer) {
+          supVer = r.s; support = r.support || { list: [], totals: null, streamStart: 0 };
+          eachModule("ticker", function (mod) { mod.refresh(); });
+        }
+        if (Array.isArray(r.events)) { var first = evSeq < 0; evSeq = r.e; if (!first) r.events.forEach(handleHubEvent); }
+        else if (typeof r.e === "number") evSeq = r.e;
+      })
+      .catch(function (e) { log("helper not reachable: " + e.message); })
+      .then(function () { pollTimer = setTimeout(poll, PREVIEW ? 600 : 800); });
+  }
+  function handleHubEvent(ev) {
+    if (!ev) return;
+    if (ev.type === "reload") { location.reload(); return; }
+    if (ev.type === "chat-test") { CHAT.emit(testMessage(ev)); return; }
+    if (ev.type === "chat" && ev.platform === "rumble") { CHAT.emit(fromRumble(ev)); return; }
+    if (ev.type === "chat-delete" && ev.platform === "rumble") { CHAT.emit({ type: "delete", platform: "rumble", ids: (ev.ids || []).map(String) }); return; }
+    if (ev.type === "emote-test") { CHAT.emit(testMessage({ platform: "kick", text: "emote test", emotes: true })); }
+  }
+
+  /* =====================================================================
+     Smooth scrolling (ticker, music, banner)
+     ===================================================================== */
+  var scrollers = [];
+  function Scroller(vp, track) { this.vp = vp; this.track = track; this.p = 0; this.S = 1; this.on = false; this.axis = "x"; this.neg = true; this.speed = 60; scrollers.push(this); }
+  Scroller.prototype.set = function (nodes, opt) {
+    var self = this, tr = this.track;
+    this.axis = opt.axis; this.speed = opt.speed; this.neg = opt.dir === "left" || opt.dir === "up";
+    tr.innerHTML = "";
+    nodes.forEach(function (n) { tr.appendChild(n); });
+    var vlen = this.axis === "x" ? this.vp.clientWidth : this.vp.clientHeight;
+    this.S = Math.max(1, this.axis === "x" ? tr.scrollWidth : tr.scrollHeight);
+    var scroll = opt.mode === "always" || (opt.mode === "auto" && this.S > vlen + 1);
+    if (!scroll || !nodes.length) { this.on = false; tr.style.transform = "none"; return false; }
+    var copies = Math.ceil(vlen / this.S) + 2;
+    for (var c = 1; c < copies; c++) nodes.forEach(function (n) { tr.appendChild(n.cloneNode(true)); });
+    var pad = Math.min(40, vlen * 0.05);
+    this.p = opt.fresh ? (this.neg ? (((-(vlen - pad)) % this.S) + this.S) % this.S : pad) : this.p % this.S;
+    this.on = true; this.paint();
+    return true;
+  };
+  Scroller.prototype.paint = function () {
+    var T = this.neg ? -this.p : this.p - this.S;
+    this.track.style.transform = this.axis === "x" ? "translateX(" + T + "px)" : "translateY(" + T + "px)";
+  };
+  Scroller.prototype.tick = function (dt) { if (!this.on) return; this.p = (this.p + this.speed * dt) % this.S; this.paint(); };
+  Scroller.prototype.destroy = function () { var i = scrollers.indexOf(this); if (i >= 0) scrollers.splice(i, 1); };
+  var lastTs = 0;
+  function frame(ts) {
+    if (lastTs) { var dt = Math.min(1, (ts - lastTs) / 1000); scrollers.forEach(function (s) { s.tick(dt); }); }
+    lastTs = ts; requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  function fmtMoney(n, cur) {
+    n = toNum(n); if (n === null) return "";
+    cur = (str(cur) || "USD").toUpperCase();
+    try { return new Intl.NumberFormat("en-US", { style: "currency", currency: cur }).format(n); } catch (e) { return n.toFixed(2) + " " + cur; }
+  }
+  function fmtInt(n) { try { return new Intl.NumberFormat("en-US").format(n); } catch (e) { return String(n); } }
+  var LOGO = { kick: "https://kick.com/favicon.ico", twitch: "https://www.twitch.tv/favicon.ico", youtube: "https://www.youtube.com/favicon.ico", rumble: "https://rumble.com/favicon.ico" };
+
+  /* =====================================================================
+     Chat feed shared by the chat box and the emote overlays
+     message: { platform, ids[], user{id,login,name}, color, role, badgesHtml, avatar, text, html, emotes[{url,name}] }
+     ===================================================================== */
+  var CHAT = (function () {
+    var subs = [];
+    return {
+      on: function (fn) { subs.push(fn); return function () { var i = subs.indexOf(fn); if (i >= 0) subs.splice(i, 1); }; },
+      emit: function (m) { if (!m) return; subs.slice().forEach(function (fn) { try { fn(m); } catch (e) { log("chat error: " + e.message); } }); }
+    };
+  })();
+  function needsPlatform(p) {
+    return profile.overlays.some(function (o) {
+      if (!o.visible) return false;
+      if (o.type === "chat") return o.settings.sources[p];
+      if (o.type === "emoteCombo" || o.type === "emoteRain") return o.settings.platforms[p];
+      return false;
+    });
+  }
+  function emoteImg(u, alt) { var s = safeUrl(u); return s ? '<img class="emote" alt="' + esc(alt || "") + '" src="' + s + '">' : esc(alt || ""); }
+  function imgBadge(u, alt) { var s = safeUrl(u); return s ? '<img class="ibadge" alt="' + esc(alt || "") + '" src="' + s + '">' : ""; }
+  function textBadge(t) { return '<span class="tbadge">' + esc(t) + "</span>"; }
+  function imgBadgesHtml(badges) { var h = ""; (badges || []).forEach(function (b) { if (b) h += imgBadge(b.imageUrl || b.ImageUrl, b.name || b.info || ""); }); return h; }
+  function partsToHtml(parts, emotes) {
+    return parts.map(function (p) {
+      if (!p) return "";
+      var u = p.imageUrl || p.ImageUrl;
+      if (p.type === "emote" && u) { emotes.push({ url: u, name: p.text }); return emoteImg(u, p.text); }
+      return esc(p.text || "");
+    }).join("");
+  }
+  function namedEmotes(text, list, emotes) {
+    var map = {};
+    (list || []).forEach(function (e) { var n = e.name || e.Name, u = e.imageUrl || e.ImageUrl; if (n && u) map[n] = u; });
+    return String(text).split(/(\s+)/).map(function (w) { if (map[w]) { emotes.push({ url: map[w], name: w }); return emoteImg(map[w], w); } return esc(w); }).join("");
+  }
+  function kickHtml(text, emotes) {
+    return String(text).split(/(\[emote:\d+:[^\]]*\])/g).map(function (part) {
+      var m = part.match(/^\[emote:(\d+):([^\]]*)\]$/);
+      if (!m) return esc(part);
+      var u = "https://files.kick.com/emotes/" + m[1] + "/fullsize";
+      emotes.push({ url: u, name: m[2] });
+      return emoteImg(u, m[2]);
+    }).join("");
+  }
+  function pickAvatar(u) { return (u && (u.profilePicture || u.profileImageUrl || u.profile_image_url || u.avatar)) || ""; }
+  var avatarCache = new Map(), kickExtrasById = new Map(), kickExtrasByName = new Map();
+  function rememberAvatar(platform, user, url) {
+    if (!url) return;
+    [user.login, user.name].filter(Boolean).forEach(function (n) { avatarCache.set(platform + ":" + lower(n), url); });
+    if (avatarCache.size > 3000) avatarCache.delete(avatarCache.keys().next().value);
+  }
+  function storeKickExtras(d) {
+    var u = d.user || {};
+    var extras = { avatar: pickAvatar(u), badgesHtml: imgBadgesHtml(u.badges) };
+    if (!extras.avatar && !extras.badgesHtml) return;
+    [d.messageId, d.msgId, d.id].filter(Boolean).forEach(function (id) { kickExtrasById.set(String(id), extras); });
+    [u.login, u.name].filter(Boolean).forEach(function (n) { kickExtrasByName.set(lower(n), extras); });
+    if (kickExtrasById.size > 500) kickExtrasById.delete(kickExtrasById.keys().next().value);
+    rememberAvatar("kick", { login: u.login, name: u.name }, extras.avatar);
+  }
+  function kickExtras(m) {
+    for (var i = 0; i < m.ids.length; i++) if (kickExtrasById.has(m.ids[i])) return kickExtrasById.get(m.ids[i]);
+    return kickExtrasByName.get(lower(m.user.login)) || kickExtrasByName.get(lower(m.user.name)) || null;
+  }
+  function fromKick(d) {
+    var sender = d.sender || {}, identity = sender.identity || {}, bh = "", emotes = [];
+    (identity.badges || []).forEach(function (b) { if (b && b.text) bh += textBadge(b.text); });
+    var html = kickHtml(d.content || "", emotes);
+    return { type: "message", platform: "kick", ids: [d.id].filter(Boolean).map(String), user: { id: sender.id, login: sender.slug || sender.username, name: sender.username },
+      color: safeColor(identity.color), badgesHtml: bh, text: d.content || "", html: html, emotes: emotes };
+  }
+  function fromTwitch(d) {
+    var emotes = [];
+    if (d.user || d.text !== undefined) {
+      var u = d.user || {}, bh = "";
+      (u.badges || []).forEach(function (b) { bh += imgBadge(b.imageUrl, b.name); });
+      var text = d.text || "";
+      rememberAvatar("twitch", u, pickAvatar(u));
+      var html = Array.isArray(d.parts) && d.parts.length ? partsToHtml(d.parts, emotes) : namedEmotes(text, d.emotes, emotes);
+      return { type: "message", platform: "twitch", avatar: pickAvatar(u), ids: [d.messageId, d.msgId, d.id].filter(Boolean).map(String), user: { id: u.id, login: u.login, name: u.name },
+        color: safeColor(u.color), badgesHtml: bh, text: text, html: html, emotes: emotes };
+    }
+    var m = d.message || {}, bh2 = "";
+    (m.badges || []).forEach(function (b) { bh2 += imgBadge(b.imageUrl, b.name); });
+    var t2 = m.message || "";
+    return { type: "message", platform: "twitch", ids: [m.msgId, m.messageId, m.id, d.messageId].filter(Boolean).map(String), user: { id: m.userId, login: m.username, name: m.displayName || m.username },
+      color: safeColor(m.color), badgesHtml: bh2, text: t2, html: namedEmotes(t2, m.emotes, emotes), emotes: emotes };
+  }
+  function fromYouTube(d) {
+    var u = d.user || d.author || {}, emotes = [];
+    rememberAvatar("youtube", u, pickAvatar(u));
+    var bh = imgBadgesHtml(u.badges), role = "";
+    if (u.isOwner) role = "owner"; else if (u.isModerator) role = "mod"; else if (u.isSponsor || u.isMember) role = "member";
+    if (!bh) { if (role === "owner") bh = textBadge("OWNER"); else if (role === "mod") bh = textBadge("MOD"); if (role === "member") bh += textBadge("MEMBER"); }
+    var text = typeof d.message === "string" ? d.message : (d.text || (d.message && d.message.text) || "");
+    var html = Array.isArray(d.parts) && d.parts.length ? partsToHtml(d.parts, emotes) : namedEmotes(text, d.emotes, emotes);
+    return { type: "message", platform: "youtube", avatar: pickAvatar(u), role: role, ids: [d.eventId, d.messageId, d.id, d.message && d.message.id].filter(Boolean).map(String),
+      user: { id: u.id, login: u.login, name: u.name || u.displayName }, color: "", badgesHtml: bh, text: text, html: html, emotes: emotes };
+  }
+  function fromRumble(ev) {
+    var bh = ""; (ev.badges || []).forEach(function (b) { if (b && b.url) bh += imgBadge(b.url, b.name); else if (b) bh += textBadge(b.name || b); });
+    return { type: "message", platform: "rumble", ids: [String(ev.id || ("r" + Date.now() + Math.random()))], user: { id: ev.userId, login: ev.user, name: ev.user },
+      color: safeColor(ev.color), avatar: ev.avatar || "", badgesHtml: bh, text: ev.text || "", html: esc(ev.text || ""), emotes: [] };
+  }
+  // Little made-up emotes for tests and the preview (so no internet is needed).
+  function fakeEmote(n) {
+    var cols = ["#3ddc84", "#7c5cff", "#ffb347", "#ff5d8f", "#39c6ff"], c = cols[n % cols.length];
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="' + c + '"/><circle cx="22" cy="26" r="5" fill="#111"/><circle cx="42" cy="26" r="5" fill="#111"/><path d="M18 40 Q32 54 46 40" stroke="#111" stroke-width="5" fill="none" stroke-linecap="round"/></svg>';
+    return "data:image/svg+xml;base64," + btoa(svg);
+  }
+  var testN = 0;
+  function testMessage(ev) {
+    testN++;
+    var p = (ev && ev.platform) || ["kick", "twitch", "youtube", "rumble"][testN % 4];
+    var text = (ev && ev.text) || "Test message from AOverlay Hub";
+    var emotes = [], html = esc(text);
+    if (ev && ev.emotes) { var u = fakeEmote(testN % 3); emotes = [{ url: u, name: "test" }, { url: u, name: "test" }]; html += " " + emoteImg(u, "test") + emoteImg(u, "test"); }
+    return { type: "message", platform: p, ids: ["t" + Date.now() + Math.random()], user: { name: "AOverlayHub", login: "aoverlayhub" }, color: "", badgesHtml: "", text: text, html: html, emotes: emotes };
+  }
+  function allStrings(obj, out, depth) {
+    out = out || []; depth = depth || 0;
+    if (obj == null || depth > 4) return out;
+    if (typeof obj === "string" || typeof obj === "number") { out.push(String(obj)); return out; }
+    if (typeof obj === "object") for (var k in obj) allStrings(obj[k], out, depth + 1);
+    return out;
+  }
+  function targetNames(d) {
+    var t = d.targetUser || d.target_user || d.user || {};
+    return [t.id, t.login, t.name, t.username, t.slug, d.target_user_id, d.target_user_login, d.target_user_display, d.target_user_name].filter(Boolean);
+  }
+  function handleKickPusher(name, raw) {
+    var data = raw;
+    if (typeof data === "string") { try { data = JSON.parse(data); } catch (e) { return; } }
+    if (!data) return;
+    if (name === "App\\Events\\ChatMessageEvent") { var m = fromKick(data); var ex = kickExtras(m); if (ex) { if (ex.avatar) m.avatar = ex.avatar; if (ex.badgesHtml) m.badgesHtml = ex.badgesHtml; } CHAT.emit(m); }
+    else if (name === "App\\Events\\MessageDeletedEvent") CHAT.emit({ type: "delete", platform: "kick", ids: allStrings(data) });
+    else if (name === "App\\Events\\UserBannedEvent") CHAT.emit({ type: "ban", platform: "kick", names: targetNames(data) });
+    else if (name === "App\\Events\\ChatroomClearEvent") CHAT.emit({ type: "clear", platform: "kick" });
+  }
+  function onSBChat(source, type, d) {
+    if (!d) return;
+    if (source === "Kick" && type === "ChatMessage") { storeKickExtras(d); return; }
+    if (source === "Twitch") {
+      if (type === "ChatMessage") CHAT.emit(fromTwitch(d));
+      else if (type === "ChatMessageDeleted") CHAT.emit({ type: "delete", platform: "twitch", ids: allStrings(d) });
+      else if (type === "UserBanned" || type === "UserTimedOut") CHAT.emit({ type: "ban", platform: "twitch", names: targetNames(d) });
+      else if (type === "ChatCleared") { var n = targetNames(d); CHAT.emit(n.length ? { type: "ban", platform: "twitch", names: n } : { type: "clear", platform: "twitch" }); }
+    } else if (source === "YouTube") {
+      if (type === "Message") CHAT.emit(fromYouTube(d));
+      else if (type === "MessageDeleted") CHAT.emit({ type: "delete", platform: "youtube", ids: allStrings(d) });
+      else if (type === "UserBanned" || type === "UserTimedout" || type === "UserTimedOut") CHAT.emit({ type: "ban", platform: "youtube", names: targetNames(d) });
+    }
+  }
+
+  /* ---------------- Kick, connected directly (one connection for all overlays) ---------------- */
+  var KICK = (function () {
+    var FALLBACK_KEY = "34bf7a0ff419a2a775b9", FALLBACK_CLUSTER = "us2";
+    var ws = null, room = "", retry = 2000, ping = null, state = "off", timer = null, gen = 0;
+    function stop() { gen++; clearTimeout(timer); if (ping) clearInterval(ping); ping = null; try { if (ws) { ws.onclose = null; ws.close(); } } catch (e) {} ws = null; }
+    function pusherUrl() {
+      return fetch("https://web.kick.com/api/v1/realtime/connection", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accepted_providers: ["pusher"] }) })
+        .then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; })
+        .then(function (info) {
+          var key = FALLBACK_KEY, cluster = FALLBACK_CLUSTER;
+          var conns = (info && info.data && info.data.connections) || [];
+          for (var i = 0; i < conns.length; i++) { var cr = conns[i] && conns[i].credentials; if (cr && cr.app_key) { key = cr.app_key; cluster = cr.cluster || cluster; break; } }
+          return "wss://ws-" + cluster + ".pusher.com/app/" + key + "?protocol=7&client=js&version=8.4.0&flash=false";
+        });
+    }
+    function open() {
+      var my = gen;
+      state = "connecting";
+      pusherUrl().then(function (url) {
+        if (my !== gen) return;
+        var s = ws = new WebSocket(url);
+        s.onmessage = function (ev) {
+          var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
+          if (msg.event === "pusher:connection_established") { s.send(JSON.stringify({ event: "pusher:subscribe", data: { auth: "", channel: "chatrooms." + room + ".v2" } })); return; }
+          if (msg.event === "pusher_internal:subscription_succeeded") { state = "connected"; retry = 2000; log("Kick chat connected"); ping = setInterval(function () { if (s.readyState === 1) s.send(JSON.stringify({ event: "pusher:ping", data: {} })); }, 60000); return; }
+          if (msg.event === "pusher:ping") { s.send(JSON.stringify({ event: "pusher:pong", data: {} })); return; }
+          if (msg.event === "pusher:subscription_error") { state = "chatroom not found"; return; }
+          if (msg.event === "pusher:error") { state = "refused"; retry = 30000; return; }
+          handleKickPusher(msg.event, msg.data);
+        };
+        s.onclose = function () {
+          if (ping) clearInterval(ping); ping = null;
+          if (my !== gen) return;
+          if (state === "connected") state = "reconnecting";
+          timer = setTimeout(open, retry); retry = Math.min(retry * 2, 30000);
+        };
+        s.onerror = function () { try { s.close(); } catch (e) {} };
+      });
+    }
+    return {
+      configure: function () {
+        var r = String((cfg.kick && cfg.kick.chatroom) || "").trim();
+        var want = LIVE && /^\d+$/.test(r) && needsPlatform("kick") ? r : "";
+        if (want === room) return;
+        stop(); room = want; retry = 2000;
+        if (room) open(); else state = needsPlatform("kick") ? "no chatroom" : "off";
+      },
+      state: function () { return state; }
+    };
+  })();
+
+  /* =====================================================================
+     Overlay modules
+     ===================================================================== */
+  var MODULES = {};
+
+  /* ---------------- Support Ticker ---------------- */
+  var BADGE_TXT = { kick: "K", twitch: "T", youtube: "▶", rumble: "R", donation: "$" };
+  function isDark(hex) {
+    var h = String(hex || "").replace("#", ""); if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    var n = parseInt(h, 16); if (!isFinite(n)) return false;
+    return (((n >> 16) & 255) * 299 + ((n >> 8) & 255) * 587 + (n & 255) * 114) / 1000 < 140;
+  }
+  MODULES.ticker = function (el, o) {
+    var root = document.createElement("div");
+    el.appendChild(root);
+    var known = null, scroller = null, track = null, vp = null, hideTimer = null;
+
+    function build() {
+      var s = o.settings, c = s.colors, H = s.orientation !== "vertical";
+      root.className = "tk " + (H ? "h" : "v");
+      root.style.cssText = "border-radius:" + s.radius + "px;background:" + AOH.rgba(c.panel, s.panelOpacity) + ";" + (s.panelOpacity < 0.05 ? "border-color:transparent;" : "");
+      root.style.setProperty("--stripe", "linear-gradient(90deg," + c.grad1 + "," + c.grad2 + " 50%," + c.grad3 + ")");
+      applyText(root, s.text);
+      root.innerHTML = "";
+      if (s.showTitle) {
+        var lab = document.createElement("div");
+        lab.className = "label";
+        lab.appendChild(layered((s.titleIcon ? esc(s.titleIcon) + " " : "") + esc(s.title), c.title));
+        lab.style.fontWeight = "800";
+        root.appendChild(lab);
+      }
+      vp = document.createElement("div"); vp.className = "vp";
+      track = document.createElement("div"); track.className = "track " + (H ? "h" : "v");
+      vp.appendChild(track); root.appendChild(vp);
+      if (scroller) scroller.destroy();
+      scroller = new Scroller(vp, track);
+      known = null;
+      refresh();
+    }
+    function wanted(e) {
+      var s = o.settings;
+      var plat = e.platform === "donation" ? "donations" : e.platform;
+      if (!s.platforms[plat]) return false;
+      var ev = { tip: "tips", sub: "subs", resub: "resubs", gift: "gifts", member: "members", follow: "follows" }[e.kind] || "tips";
+      if (!s.events[ev]) return false;
+      if (e.unit === "kicks" && toNum(e.num) !== null && e.num < s.min.kicks) return false;
+      if (e.unit === "bits" && toNum(e.num) !== null && e.num < s.min.bits) return false;
+      if (e.unit === "money" && toNum(e.num) !== null && e.num < s.min.money) return false;
+      return true;
+    }
+    function badgeNode(platform) {
+      var s = o.settings, b = document.createElement("span");
+      var col = s.badges[platform] || s.badges.donation;
+      b.className = "badge" + (isDark(col) ? " light" : "");
+      if (s.badges.style === "logo" && LOGO[platform]) {
+        b.style.background = "transparent";
+        var img = document.createElement("img"); img.src = LOGO[platform];
+        img.onerror = function () { b.innerHTML = ""; b.style.background = col; b.textContent = BADGE_TXT[platform] || "$"; };
+        b.appendChild(img);
+      } else { b.style.background = col; b.textContent = BADGE_TXT[platform] || "$"; }
+      return b;
+    }
+    function itemNode(e, fresh) {
+      var s = o.settings, c = s.colors;
+      var it = document.createElement("div");
+      it.className = "item" + (fresh ? " fresh" : "");
+      it.style.background = AOH.rgba(c.item, s.itemOpacity);
+      it.style.borderLeftColor = c.accent;
+      it.style.setProperty("--glow", c.accent);
+      it.style.setProperty("--glow-n", String(Math.max(1, Math.round(s.glowSeconds / 1.1))));
+      if (s.orientation === "vertical") it.style.marginBottom = s.gap + "px"; else it.style.marginRight = s.gap + "px";
+      if (s.badges.show && e.platform) it.appendChild(badgeNode(e.platform));
+      it.appendChild(layered(esc(e.name || "Someone"), c.name, "name"));
+      var text = [e.amount, e.what].filter(Boolean).join(" ");
+      if (text) it.appendChild(layered(esc(text), c.amount, "amount"));
+      return it;
+    }
+    function totalsNode() {
+      var s = o.settings, t = support.totals;
+      if (!t) return null;
+      var parts = [];
+      if (t.kicks) parts.push(fmtInt(t.kicks) + " Kicks");
+      if (t.bits) parts.push(fmtInt(t.bits) + " Bits");
+      if (t.money) Object.keys(t.money).forEach(function (cur) { if (t.money[cur]) parts.push(fmtMoney(t.money[cur], cur)); });
+      if (t.subs) parts.push(fmtInt(t.subs) + " subs");
+      if (!parts.length) return null;
+      var it = itemNode({ name: s.totalsLabel + ":", amount: parts.join(" · "), what: "" }, false);
+      it.style.borderLeftColor = s.colors.grad3;
+      return it;
+    }
+    function emptyNode() {
+      var s = o.settings, it = document.createElement("div");
+      it.className = "item"; it.style.background = AOH.rgba(s.colors.item, s.itemOpacity); it.style.borderLeftColor = s.colors.grad3;
+      it.appendChild(layered(esc(s.emptyText), s.colors.name, "name"));
+      return it;
+    }
+    function updateHidden(list) {
+      var s = o.settings, now = Date.now(), hide = false;
+      var newest = list.length ? list[0].t || 0 : 0;
+      if (s.hideUntilFirst && newest < (support.streamStart || 0)) hide = true;
+      if (s.hideUntilFirst && !list.length) hide = true;
+      if (s.hideAfterMinutes > 0 && (!newest || now - newest > s.hideAfterMinutes * 60000)) hide = true;
+      if (PREVIEW) hide = false;
+      el.classList.toggle("autohidden", hide);
+    }
+    function refresh() {
+      var s = o.settings;
+      var all = (support.list || []).filter(wanted);
+      var list = all.slice(0, s.max);
+      var now = Date.now(), freshId = null, ids = {};
+      list.forEach(function (e) { ids[e.id] = true; if (known && !known[e.id] && !freshId && now - (e.t || 0) < 60000) freshId = e.id; });
+      known = ids;
+      updateHidden(all);
+      var H = s.orientation !== "vertical", dir = s.direction;
+      if (H && dir !== "right") dir = "left";
+      if (!H && dir !== "down") dir = "up";
+      var ordered = list.slice(), scrolling = s.motion === "scroll";
+      if (scrolling && (dir === "right" || dir === "down")) ordered.reverse();
+      var nodes = ordered.map(function (e) { return itemNode(e, e.id === freshId && s.glowSeconds > 0); });
+      if (s.showTotals) { var tn = totalsNode(); if (tn) { if (scrolling && (dir === "right" || dir === "down")) nodes.push(tn); else nodes.unshift(tn); } }
+      if (!nodes.length) nodes = [emptyNode()];
+      var apply = function () { scroller.set(nodes, { axis: H ? "x" : "y", dir: dir, speed: s.speed, mode: scrolling ? "always" : "never", fresh: !!freshId }); track.style.opacity = "1"; };
+      if (freshId) { track.style.opacity = "0"; setTimeout(apply, 250); } else apply();
+    }
+    build();
+    hideTimer = setInterval(function () { updateHidden((support.list || []).filter(wanted)); }, 5000);
+    return { update: function (no) { o = no; build(); }, refresh: refresh, resize: refresh,
+      destroy: function () { clearInterval(hideTimer); if (scroller) scroller.destroy(); } };
+  };
+
+  /* ---------------- Now Playing ---------------- */
+  MODULES.music = function (el, o) {
+    var root = document.createElement("div");
+    el.appendChild(root);
+    var scroller = null, track = null, vp = null, lastText = null, timer = null, dead = false;
+    function build() {
+      var s = o.settings, H = s.orientation !== "vertical";
+      root.className = "np " + (H ? "h" : "v");
+      root.style.borderRadius = s.radius + "px";
+      root.style.background = s.bgOn ? AOH.rgba(s.bgColor, 1 - s.bgSee / 100) : "transparent";
+      applyText(root, s.text);
+      root.innerHTML = "";
+      var lt = [s.icon, s.showLabel ? s.label : ""].filter(Boolean).join(" ");
+      if (lt) { var lbl = document.createElement("div"); lbl.className = "lbl"; lbl.appendChild(layered(esc(lt), s.labelColor)); root.appendChild(lbl); }
+      vp = document.createElement("div"); vp.className = "vp";
+      track = document.createElement("div"); track.className = "track " + (H ? "h" : "v");
+      vp.appendChild(track); root.appendChild(vp);
+      if (scroller) scroller.destroy();
+      scroller = new Scroller(vp, track);
+      lastText = null; fetchNow();
+    }
+    function textFrom(r) {
+      var s = o.settings, tracks = (r && r.tracks) || [];
+      if (!tracks.length) return "";
+      var one = function (t) { return (s.showSource && t.source ? t.source + ": " : "") + t.name; };
+      if (tracks.length === 1) return one(tracks[0]);
+      return [s.multiText.replace(/\{count\}/g, String(tracks.length))].concat(tracks.map(one)).join("  •  ");
+    }
+    function show(text) {
+      var s = o.settings, H = s.orientation !== "vertical";
+      if (!text && s.hideWhenIdle && !PREVIEW) { root.classList.add("idle-hidden"); lastText = text; return; }
+      root.classList.remove("idle-hidden");
+      if (!text) text = PREVIEW && s.hideWhenIdle ? "Song Name - Artist (preview)" : s.idleText;
+      if (text === lastText) return;
+      lastText = text;
+      var span = layered(esc(text), "", "song");
+      if (H) span.style.paddingRight = "3em"; else span.style.paddingBottom = "3em";
+      var dir = s.direction;
+      if (H && dir !== "right") dir = "left";
+      if (!H && dir !== "down") dir = "up";
+      if (!scroller.set([span], { axis: H ? "x" : "y", dir: dir, speed: s.speed, mode: s.scroll, fresh: false })) { span.style.paddingRight = ""; span.style.paddingBottom = ""; }
+    }
+    function fetchNow() {
+      clearTimeout(timer);
+      if (dead) return;
+      if (o.settings.source === "off") { show(""); return; }
+      api("/api/music?id=" + encodeURIComponent(o.id)).then(function (r) { show(r && r.ok ? textFrom(r) : ""); }).catch(function () { show(""); })
+        .then(function () { if (!dead) timer = setTimeout(fetchNow, 1500); });
+    }
+    build();
+    return { update: function (no) { o = no; build(); }, resize: function () { lastText = null; fetchNow(); },
+      destroy: function () { dead = true; clearTimeout(timer); if (scroller) scroller.destroy(); } };
+  };
+
+  /* ---------------- Banner ---------------- */
+  var svgCache = {};
+  function loadSvg(file) {
+    if (!svgCache[file]) svgCache[file] = fetch("/web/banners/" + file).then(function (r) { return r.ok ? r.text() : ""; }).catch(function () { return ""; });
+    return svgCache[file];
+  }
+  MODULES.banner = function (el, o) {
+    var root = document.createElement("div"); root.className = "bn";
+    el.appendChild(root);
+    var gfx = document.createElement("div"); gfx.className = "gfx";
+    var words = document.createElement("div"); words.className = "words";
+    root.appendChild(gfx); root.appendChild(words);
+    var timer = null, idx = 0, scroller = null, buildN = 0;
+    function build() {
+      var s = o.settings, my = ++buildN;
+      clearInterval(timer); timer = null;
+      if (scroller) { scroller.destroy(); scroller = null; }
+      gfx.innerHTML = ""; gfx.style.opacity = String(1 - s.graphicSee / 100);
+      if (s.graphic === "upload") {
+        var u = safeUrl(s.image);
+        if (u) { var img = document.createElement("img"); img.src = s.image; img.style.objectFit = s.fit === "stretch" ? "fill" : s.fit; gfx.appendChild(img); }
+      } else if (s.graphic !== "none" && AOH.BANNERS[s.graphic]) {
+        loadSvg(AOH.BANNERS[s.graphic].file).then(function (t) {
+          if (my !== buildN) return;
+          gfx.innerHTML = t.replace(/\{c1\}/g, safeColor(s.color1) || "#6d28d9").replace(/\{c2\}/g, safeColor(s.color2) || "#c084fc").replace(/\{id\}/g, o.id + "-" + my);
+        });
+      }
+      applyText(words, s.text);
+      words.style.padding = s.padY + "px " + s.padX + "px";
+      words.style.justifyContent = { left: "flex-start", center: "center", right: "flex-end" }[s.align] || "center";
+      var lines = AOH.listOf(s.lines);
+      if (!lines.length) lines = [""];
+      idx = 0;
+      words.innerHTML = "";
+      if (s.motion === "scroll") {
+        var vp = document.createElement("div"); vp.className = "vp"; vp.style.alignSelf = "stretch";
+        var track = document.createElement("div"); track.className = "track h";
+        vp.appendChild(track); words.appendChild(vp);
+        scroller = new Scroller(vp, track);
+        var nodes = lines.map(function (l) { var t = layered(esc(l), "", "msgtx"); t.style.paddingRight = "3em"; return t; });
+        scroller.set(nodes, { axis: "x", dir: s.direction === "right" ? "right" : "left", speed: s.speed, mode: "always", fresh: false });
+        return;
+      }
+      var cur = layered(esc(lines[0]), "", "msgtx");
+      words.appendChild(cur);
+      if (lines.length > 1) {
+        timer = setInterval(function () {
+          idx = (idx + 1) % lines.length;
+          if (s.motion === "fade") {
+            cur.classList.add("out");
+            setTimeout(function () { var n = layered(esc(lines[idx]), "", "msgtx out"); words.innerHTML = ""; words.appendChild(n); cur = n; requestAnimationFrame(function () { requestAnimationFrame(function () { n.classList.remove("out"); }); }); }, 500);
+          } else { var n2 = layered(esc(lines[idx]), "", "msgtx"); words.innerHTML = ""; words.appendChild(n2); cur = n2; }
+        }, Math.max(1, s.rotateSeconds) * 1000);
+      }
+    }
+    build();
+    return { update: function (no) { o = no; build(); }, resize: function () { if (o.settings.motion === "scroll") build(); }, destroy: function () { clearInterval(timer); if (scroller) scroller.destroy(); } };
+  };
+
+  /* ---------------- Delayed chat ---------------- */
+  MODULES.chat = function (el, o) {
+    var box = document.createElement("div");
+    el.appendChild(box);
+    var pending = new Map(), shown = new Map(), idIndex = new Map();
+    var sampleTimer = null, lastMsgAt = Date.now(), hideTimer = null;
+    var hidden = {};
+    function S() { return o.settings; }
+    function style() {
+      var s = S();
+      box.className = "chat " + (s.layout === "line" ? "line" : "stack") + (s.newestAt === "top" ? " top" : "");
+      box.style.gap = s.gap + "px";
+      applyText(box, s.text);
+      hidden = nameSet(s.hideUsers);
+      shown.forEach(function (it) { styleMsg(it.el); });
+      trim(); autoHide();
+    }
+    function styleMsg(m) { var s = S(); m.style.background = AOH.rgba(s.bubble, 1 - s.bubbleSee / 100); m.style.borderRadius = s.radius + "px"; }
+    function platColor(p) { var s = S(); return { kick: s.kickColor, twitch: s.twitchColor, youtube: s.youtubeColor, rumble: s.rumbleColor }[p] || "#ffffff"; }
+    function nameColor(m) {
+      var s = S();
+      if (s.nameColors === "single") return s.nameColor;
+      if (m.platform === "youtube") return { owner: "#ffd600", mod: "#5e84f1", member: "#2ba640" }[m.role] || platColor("youtube");
+      return m.color || platColor(m.platform);
+    }
+    function iconHtml(p) {
+      var s = S();
+      if (s.icons === "none") return "";
+      if (s.icons === "dot") return '<span class="dot" style="background:' + esc(platColor(p)) + '"></span>';
+      var src = s.icons === "custom" && safeUrl(s.iconUrls[p]) ? s.iconUrls[p] : LOGO[p];
+      return '<img class="picon" alt="" src="' + esc(src) + '" onerror="this.outerHTML=\'<span class=&quot;dot&quot; style=&quot;background:' + esc(platColor(p)) + '&quot;></span>\'">';
+    }
+    function isHidden(m) {
+      var s = S();
+      if (!s.sources[m.platform]) return true;
+      if (s.hideCommands && String(m.text || "").trim().charAt(0) === "!") return true;
+      return !!(hidden[lower(m.user.login)] || hidden[lower(m.user.name)]);
+    }
+    function receive(m) {
+      if (!m.ids.length || isHidden(m)) return;
+      var s = S();
+      m.key = m.platform + ":" + m.ids[0];
+      if (pending.has(m.key) || shown.has(m.key)) return;
+      m.ids.forEach(function (id) { idIndex.set(m.platform + ":" + id, m.key); });
+      var wait = (m.platform === "kick" ? s.kickDelay : m.platform === "rumble" ? s.rumbleDelay : s.sbDelay) * 1000;
+      var timer = setTimeout(function () { release(m.key); }, Math.max(0, wait));
+      pending.set(m.key, { msg: m, timer: timer });
+    }
+    function release(key) {
+      var item = pending.get(key); if (!item) return;
+      pending.delete(key);
+      var s = S(), m = item.msg;
+      if (!m.avatar) m.avatar = avatarCache.get(m.platform + ":" + lower(m.user.login || m.user.name)) || "";
+      var av = s.avatars ? safeUrl(m.avatar) : "";
+      var div = document.createElement("div");
+      div.className = "msg";
+      var html = (av ? '<img class="avatar" alt="" src="' + av + '" onerror="this.remove()">' : "") + (s.badges ? (m.badgesHtml || "") : "") +
+        '<span class="cname" style="color:' + esc(nameColor(m)) + '">' + esc(m.user.name || m.user.login || "someone") + ":</span>" + m.html;
+      div.innerHTML = iconHtml(m.platform);
+      div.appendChild(layered(html));
+      styleMsg(div);
+      box.appendChild(div);
+      shown.set(key, { msg: m, el: div });
+      lastMsgAt = Date.now(); autoHide();
+      if (s.fade > 0) setTimeout(function () { fadeOut(key); }, s.fade * 1000);
+      trim();
+      div.querySelectorAll("img").forEach(function (im) { if (!im.complete) im.addEventListener("load", trim, { once: true }); });
+    }
+    // Keep only what fits in the box (and no more than "most messages", if set).
+    function trim() {
+      var s = S();
+      while (s.max > 0 && shown.size > s.max) removeShown(shown.keys().next().value);
+      var line = s.layout === "line", guard = 0;
+      while (shown.size > 1 && guard++ < 200 && (line ? box.scrollWidth > box.clientWidth + 1 : box.scrollHeight > box.clientHeight + 1)) removeShown(shown.keys().next().value);
+    }
+    function autoHide() {
+      var s = S(); clearTimeout(hideTimer);
+      if (!(s.autoHideSeconds > 0) || PREVIEW) { el.classList.remove("autohidden"); return; }
+      var left = s.autoHideSeconds * 1000 - (Date.now() - lastMsgAt);
+      if (left <= 0) { el.classList.add("autohidden"); return; }
+      el.classList.remove("autohidden");
+      hideTimer = setTimeout(autoHide, left + 50);
+    }
+    function fadeOut(key) { var it = shown.get(key); if (!it) return; it.el.classList.add("fading"); setTimeout(function () { removeShown(key); }, 600); }
+    function forget(key, msg) { if (msg) msg.ids.forEach(function (id) { idIndex.delete(msg.platform + ":" + id); }); }
+    function removeShown(key) { var it = shown.get(key); if (!it) return; it.el.remove(); shown.delete(key); forget(key, it.msg); }
+    function dropKey(key) { var p = pending.get(key); if (p) { clearTimeout(p.timer); pending.delete(key); forget(key, p.msg); } removeShown(key); }
+    function onEvent(ev) {
+      if (ev.type === "message") return receive(ev);
+      if (ev.type === "delete") { (ev.ids || []).forEach(function (s) { var key = idIndex.get(ev.platform + ":" + s); if (key) dropKey(key); }); return; }
+      var match = null;
+      if (ev.type === "ban") {
+        var w = {}; (ev.names || []).forEach(function (n) { w[lower(n)] = true; });
+        match = function (m) { return m.platform === ev.platform && (w[lower(m.user.id)] || w[lower(m.user.login)] || w[lower(m.user.name)]); };
+      } else if (ev.type === "clear") match = function (m) { return m.platform === ev.platform; };
+      if (!match) return;
+      Array.from(pending).forEach(function (kv) { if (match(kv[1].msg)) dropKey(kv[0]); });
+      Array.from(shown).forEach(function (kv) { if (match(kv[1].msg)) dropKey(kv[0]); });
+    }
+    var sampleN = 0;
+    function sample() {
+      sampleN++;
+      var people = [["kick", "froggy", "#53fc18"], ["twitch", "lilypad", "#ff7ad9"], ["youtube", "toadally", ""], ["rumble", "ribbit", "#ffd23f"]];
+      var p = people[sampleN % people.length];
+      var text = ["hello chat!", "this is what chat looks like", "nice play", "GG"][sampleN % 4];
+      var u = fakeEmote(sampleN), withEmote = sampleN % 3 === 0;
+      receive({ type: "message", platform: p[0], ids: ["s" + sampleN], user: { name: p[1], login: p[1] }, color: p[2], role: "", badgesHtml: "", text: text,
+        html: esc(text) + (withEmote ? " " + emoteImg(u, "emote") : ""), emotes: withEmote ? [{ url: u, name: "emote" }] : [] });
+    }
+    style();
+    if (PREVIEW) { sampleTimer = setInterval(sample, 1800); sample(); }
+    var unsub = CHAT.on(onEvent);
+    return {
+      update: function (no) { o = no; style(); },
+      resize: function () { trim(); },
+      destroy: function () { unsub(); clearInterval(sampleTimer); clearTimeout(hideTimer); }
+    };
+  };
+
+  /* ---------------- Emote combo ---------------- */
+  MODULES.emoteCombo = function (el, o) {
+    var box = document.createElement("div");
+    el.appendChild(box);
+    var counts = new Map(), hidden = {}, sampleTimer = null;
+    function S() { return o.settings; }
+    function style() {
+      var s = S();
+      box.className = "combo " + s.stack;
+      box.style.gap = s.gap + "px";
+      applyText(box, s.text);
+      hidden = nameSet(s.hideUsers);
+      counts.forEach(function (c) { if (c.row) styleRow(c.row); });
+    }
+    function styleRow(r) {
+      var s = S();
+      r.style.background = AOH.rgba(s.rowColor, 1 - s.rowSee / 100);
+      r.style.border = s.borderWidth > 0 ? s.borderWidth + "px solid " + AOH.rgba(s.borderColor, 1 - s.borderSee / 100) : "none";
+      r.style.borderRadius = s.radius + "px";
+      var img = r.querySelector("img"); if (img) { img.style.width = s.emoteSize + "px"; img.style.height = s.emoteSize + "px"; }
+    }
+    function bump(url) {
+      var s = S(), c = counts.get(url);
+      if (!c) { c = { n: 0, row: null, timer: null }; counts.set(url, c); }
+      c.n++;
+      clearTimeout(c.timer);
+      c.timer = setTimeout(function () { if (c.row) c.row.remove(); counts.delete(url); }, s.staySeconds * 1000);
+      if (c.n < s.minCount) return;
+      if (!c.row) {
+        c.row = document.createElement("div"); c.row.className = "row";
+        var img = document.createElement("img"); img.src = url; img.alt = "";
+        c.row.appendChild(img);
+        c.label = document.createElement("span"); c.row.appendChild(c.label);
+        styleRow(c.row);
+        box.appendChild(c.row);
+        var rows = Array.from(counts.values()).filter(function (x) { return x.row; });
+        while (rows.length > s.maxRows) { var old = rows.shift(); old.row.remove(); old.row = null; }
+      }
+      c.label.innerHTML = "";
+      var t = layered(esc(s.prefix + c.n));
+      if (s.pop) t.classList.add("bump");
+      c.label.appendChild(t);
+    }
+    function onEvent(m) {
+      if (m.type !== "message" || !m.emotes || !m.emotes.length) return;
+      var s = S();
+      if (!s.platforms[m.platform]) return;
+      if (hidden[lower(m.user.login)] || hidden[lower(m.user.name)]) return;
+      m.emotes.forEach(function (e) { if (safeUrl(e.url)) bump(e.url); });
+    }
+    function onBroadcast(name, data) { if (name === "EmoteCount" && S().listenToStreamerbot && data.emoteUrl) bump(String(data.emoteUrl)); }
+    style();
+    var unsub = CHAT.on(onEvent), unsub2 = SB.listenBroadcast(onBroadcast);
+    if (PREVIEW) { var k = 0; sampleTimer = setInterval(function () { k++; var u = fakeEmote(k % 7 < 4 ? 0 : 1); bump(u); }, 700); }
+    return { update: function (no) { o = no; style(); }, destroy: function () { unsub(); unsub2(); clearInterval(sampleTimer); counts.forEach(function (c) { clearTimeout(c.timer); }); } };
+  };
+
+  /* ---------------- Emote rain ---------------- */
+  MODULES.emoteRain = function (el, o) {
+    var box = document.createElement("div"); box.className = "rain";
+    el.appendChild(box);
+    var live = 0, counts = new Map(), hidden = {}, sampleTimer = null;
+    function S() { return o.settings; }
+    function drop(url) {
+      var s = S();
+      if (live >= s.maxOnScreen || !safeUrl(url)) return;
+      var W = o.w, Hh = o.h;
+      var size = s.size * (1 + (Math.random() * 2 - 1) * (s.sizeRandom / 100));
+      size = Math.max(8, size);
+      var img = document.createElement("img"); img.src = url; img.alt = "";
+      img.style.width = size + "px"; img.style.height = size + "px";
+      box.appendChild(img); live++;
+      var vertical = s.direction === "down" || s.direction === "up";
+      var cross = Math.random() * Math.max(1, (vertical ? W : Hh) - size);
+      var startMain = -size, endMain = (vertical ? Hh : W);
+      if (s.direction === "up" || s.direction === "left") { var t = startMain; startMain = endMain; endMain = t; }
+      var spin = s.spin ? (Math.random() < 0.5 ? -1 : 1) * (180 + Math.random() * 360) : 0;
+      var frames = [], steps = s.wobble ? 8 : 1;
+      for (var i = 0; i <= steps; i++) {
+        var f = i / steps, main = startMain + (endMain - startMain) * f;
+        var wob = s.wobble ? Math.sin(f * Math.PI * 4) * size * 0.35 : 0;
+        var x = vertical ? cross + wob : main, y = vertical ? main : cross + wob;
+        frames.push({ transform: "translate(" + x + "px," + y + "px) rotate(" + (spin * f) + "deg)", opacity: s.fadeOut && f > 0.8 ? Math.max(0, (1 - f) / 0.2) : 1, offset: f });
+      }
+      var anim = img.animate(frames, { duration: s.seconds * 1000, easing: "linear", fill: "forwards" });
+      anim.onfinish = function () { img.remove(); live--; };
+    }
+    function onEvent(m) {
+      if (m.type !== "message" || !m.emotes || !m.emotes.length) return;
+      var s = S();
+      if (!s.platforms[m.platform]) return;
+      if (hidden[lower(m.user.login)] || hidden[lower(m.user.name)]) return;
+      var list = m.emotes.slice(0, s.perMessage);
+      list.forEach(function (e) {
+        if (s.trigger === "combo") {
+          var c = counts.get(e.url) || { n: 0, t: null };
+          c.n++; clearTimeout(c.t); c.t = setTimeout(function () { counts.delete(e.url); }, 8000); counts.set(e.url, c);
+          if (c.n >= s.comboMin) drop(e.url);
+        } else drop(e.url);
+      });
+    }
+    function onBroadcast(name, data) { if (name === "EmoteDrop" && S().listenToStreamerbot && data.imageUrl) drop(String(data.imageUrl)); }
+    function style() { hidden = nameSet(S().hideUsers); }
+    style();
+    var unsub = CHAT.on(onEvent), unsub2 = SB.listenBroadcast(onBroadcast);
+    if (PREVIEW) { var k = 0; sampleTimer = setInterval(function () { k++; drop(fakeEmote(k)); }, 500); }
+    return { update: function (no) { o = no; style(); }, destroy: function () { unsub(); unsub2(); clearInterval(sampleTimer); } };
+  };
+
+  /* ---------------- Web widget and local file ---------------- */
+  function frameModule(el, o, srcFn, label) {
+    var cur = null;
+    function build() {
+      var s = o.settings, src = srcFn(o);
+      if (PREVIEW && !SHOW_WIDGETS) { el.innerHTML = '<div class="placeholder">' + esc(o.name) + "<small>" + esc(label(o)) + "</small></div>"; cur = null; return; }
+      if (!src) { el.innerHTML = PREVIEW ? '<div class="placeholder">' + esc(o.name) + "<small>No link yet</small></div>" : ""; cur = null; return; }
+      var z = Math.max(0.05, Number(s.zoom) || 1);
+      var f = el.querySelector("iframe");
+      if (!f || cur !== src) {
+        el.innerHTML = "";
+        f = document.createElement("iframe");
+        f.setAttribute("allow", "autoplay; encrypted-media"); f.setAttribute("scrolling", "no");
+        f.src = src; el.appendChild(f); cur = src;
+      }
+      f.style.width = (o.w / z) + "px"; f.style.height = (o.h / z) + "px"; f.style.transform = "scale(" + z + ")";
+    }
+    build();
+    return { update: function (no) { o = no; build(); }, resize: build, destroy: function () { el.innerHTML = ""; } };
+  }
+  MODULES.web = function (el, o) {
+    return frameModule(el, o, function (ov) {
+      var s = ov.settings;
+      if (s.kind === "sbChat") {
+        var c = AOH.fillDefaults(AOH.clone(s.sbchat || {}), AOH.SBCHAT_DEFAULTS);
+        c.host = cfg.streamerbot.host; c.port = Number(cfg.streamerbot.port) || 8080; c.endpoint = cfg.streamerbot.endpoint || "/"; c.password = cfg.streamerbot.password || "";
+        return AOH.sbChatUrl(c);
+      }
+      return /^https?:\/\//i.test(s.url || "") ? s.url : "";
+    }, function (ov) { var k = AOH.WEB_KINDS[ov.settings.kind]; return (k ? k.label : "Web widget") + " (shown live in OBS)"; });
+  };
+  MODULES.file = function (el, o) {
+    return frameModule(el, o, function (ov) {
+      var p = String(ov.settings.path || "").replace(/\//g, "\\");
+      if (!p) return "";
+      return "/local/" + encodeURIComponent(ov.id) + "/" + encodeURIComponent(p.split("\\").pop()) + "?v=" + encodeURIComponent(p);
+    }, function () { return "Local file (shown live in OBS)"; });
+  };
+
+  /* =====================================================================
+     Streamer.bot connection (shared; only in the OBS copy)
+     ===================================================================== */
+  var SB = (function () {
+    var listeners = [], bListeners = [], ws = null, key = "", retry = 2000, state = "off", timer = null, reqId = 0;
+    var EVENTS = {
+      Kick: ["ChatMessage", "KicksGifted", "Subscription", "Resubscription", "GiftSubscription", "MassGiftSubscription", "StreamOnline"],
+      Twitch: ["ChatMessage", "ChatMessageDeleted", "UserBanned", "UserTimedOut", "ChatCleared", "Cheer", "Sub", "ReSub", "GiftSub", "GiftBomb", "CharityDonation", "StreamOnline"],
+      YouTube: ["Message", "MessageDeleted", "UserBanned", "UserTimedout", "SuperChat", "SuperSticker", "NewSponsor", "MemberMileStone", "MembershipGift", "BroadcastStarted"],
+      Streamlabs: ["Donation", "CharityDonation"], StreamElements: ["Tip"], Kofi: ["Donation", "Subscription", "Resubscription"],
+      TipeeeStream: ["Donation"], Fourthwall: ["Donation"], General: ["Custom"]
+    };
+    function sha(text) { return crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)).then(function (b) { return btoa(String.fromCharCode.apply(null, new Uint8Array(b))); }); }
+    function close() { if (ws) { var w = ws; ws = null; try { w.onclose = null; w.close(); } catch (e) {} } clearTimeout(timer); }
+    function connect() {
+      var c = cfg.streamerbot;
+      var url = "ws://" + c.host + ":" + c.port + (String(c.endpoint || "/").charAt(0) === "/" ? c.endpoint || "/" : "/" + c.endpoint);
+      var subscribed = false, sock;
+      try { sock = ws = new WebSocket(url); } catch (e) { state = "error"; later(); return; }
+      state = "connecting";
+      var subscribe = function () {
+        if (subscribed || ws !== sock) return;
+        subscribed = true; state = "connected"; retry = 2000;
+        Object.keys(EVENTS).forEach(function (src) { EVENTS[src].forEach(function (t) { var e = {}; e[src] = [t]; sock.send(JSON.stringify({ request: "Subscribe", id: "aoh-" + (++reqId), events: e })); }); });
+        log("Streamer.bot connected");
+      };
+      var helloTimer;
+      sock.onopen = function () { helloTimer = setTimeout(subscribe, 1500); };
+      sock.onmessage = function (m) {
+        var msg; try { msg = JSON.parse(m.data); } catch (e) { return; }
+        if (msg.request === "Hello") {
+          clearTimeout(helloTimer);
+          var a = msg.authentication;
+          if (a && a.challenge) {
+            if (!c.password) { state = "needs password"; return; }
+            sha(c.password + a.salt).then(function (s) { return sha(s + a.challenge); }).then(function (tok) { sock.send(JSON.stringify({ request: "Authenticate", id: "aoh-auth", authentication: tok })); });
+            return;
+          }
+          subscribe(); return;
+        }
+        if (msg.id === "aoh-auth") { if (msg.status === "ok") subscribe(); else state = "wrong password"; return; }
+        // Messages a Streamer.bot action sends with "WebsocketBroadcastJson" (e.g. {"event":"EmoteCount",...}).
+        if (typeof msg.event === "string") { bListeners.slice().forEach(function (fn) { try { fn(msg.event, msg); } catch (e) {} }); return; }
+        if (msg.event && msg.event.source) {
+          if (DEBUG) log("EVENT " + msg.event.source + "." + msg.event.type + " " + JSON.stringify(msg.data).slice(0, 300));
+          if (msg.event.source === "General" && msg.data && typeof msg.data.event === "string") { bListeners.slice().forEach(function (fn) { try { fn(msg.data.event, msg.data); } catch (e) {} }); return; }
+          listeners.slice().forEach(function (fn) { try { fn(msg.event.source, msg.event.type, msg.data); } catch (e) { log("event error: " + e.message); } });
+        }
+      };
+      sock.onclose = function () { clearTimeout(helloTimer); if (ws !== sock) return; ws = null; if (state === "connected" || state === "connecting") state = "not running"; later(); };
+      sock.onerror = function () {};
+    }
+    function later() { clearTimeout(timer); timer = setTimeout(connect, retry); retry = Math.min(retry * 1.6, 15000); }
+    return {
+      listen: function (fn) { listeners.push(fn); return function () { var i = listeners.indexOf(fn); if (i >= 0) listeners.splice(i, 1); }; },
+      listenBroadcast: function (fn) { bListeners.push(fn); return function () { var i = bListeners.indexOf(fn); if (i >= 0) bListeners.splice(i, 1); }; },
+      configure: function () {
+        if (!LIVE) return;
+        var c = cfg.streamerbot;
+        var k = c.enabled ? [c.host, c.port, c.endpoint, c.password].join("|") : "";
+        if (k === key) return;
+        key = k; close(); retry = 2000;
+        if (k) connect(); else state = "off";
+      },
+      state: function () { return state; }
+    };
+  })();
+  if (LIVE) SB.listen(onSBChat);
+
+  /* =====================================================================
+     Support events -> the shared supporter list (only in the OBS copy)
+     ===================================================================== */
+  function nameOf(d) {
+    if (!d) return null;
+    if (d.isAnonymous === true || d.anonymous === true) return "Anonymous";
+    return firstStr(get(d, "user.name"), get(d, "user.display_name"), get(d, "user.displayName"), get(d, "user.login"), d.displayName, d.display_name, d.userName, d.username, d.user_name, d.user,
+      get(d, "sender.username"), get(d, "sender.name"), get(d, "gifter.username"), get(d, "gifter.name"), d.from, d.from_name, d.donorName, d.donor_name, d.name);
+  }
+  function deepNum(obj, re, depth) {
+    if (depth === undefined) depth = 3;
+    if (!obj || typeof obj !== "object" || depth < 0) return null;
+    var keys = Object.keys(obj), i, n;
+    for (i = 0; i < keys.length; i++) if (re.test(keys[i])) { n = toNum(obj[keys[i]]); if (n !== null) return n; }
+    for (i = 0; i < keys.length; i++) if (obj[keys[i]] && typeof obj[keys[i]] === "object") { n = deepNum(obj[keys[i]], re, depth - 1); if (n !== null) return n; }
+    return null;
+  }
+  function moneyOf(d) {
+    var cur = firstStr(d.currency, d.currencyCode, d.currency_code, get(d, "amount.currency"), get(d, "amount.currencyCode")) || "USD";
+    var a = d.amount, n = null;
+    if (a && typeof a === "object") { var dp = firstNum(a.decimalPlaces, a.decimal_places); n = firstNum(a.value, a.amount); if (n !== null && dp !== null) n = n / Math.pow(10, dp); }
+    else n = firstNum(a, d.decimalAmount, d.total, d.value);
+    if (n === null && toNum(d.microAmount) !== null) n = toNum(d.microAmount) / 1e6;
+    if (n === null && toNum(d.amount_cents) !== null) n = toNum(d.amount_cents) / 100;
+    var formatted = firstStr(d.formattedAmount, d.formatted_amount, d.amountFormatted, d.displayAmount, typeof a === "string" && toNum(a) === null ? a : null);
+    if (n === null && formatted) { var m = formatted.replace(/,/g, "").match(/\d+(\.\d+)?/); if (m) n = Number(m[0]); }
+    return { text: formatted || fmtMoney(n, cur), num: n, currency: cur };
+  }
+  function postSupport(e) { if (!e.name) e.name = "Someone"; api("/api/support", e).catch(function (err) { log("could not save support: " + err.message); }); }
+  var giftBuckets = {};
+  function giftSubs(platform, gifter, singles, bomb, one, many) {
+    var k = platform + "|" + gifter;
+    var b = giftBuckets[k] || (giftBuckets[k] = { singles: 0, bomb: 0, timer: null });
+    b.singles += singles || 0;
+    if (bomb) b.bomb = Math.max(b.bomb, bomb);
+    clearTimeout(b.timer);
+    b.timer = setTimeout(function () { delete giftBuckets[k]; var n = Math.max(b.singles, b.bomb, 1); postSupport({ platform: platform, name: gifter, amount: String(n), what: n === 1 ? one : many, kind: "gift", num: n, unit: "count" }); }, 2500);
+  }
+  // The OBS copy showing the first profile is the one that reports support (so several profiles don't count it twice).
+  function isReporter() { return LIVE && (!PROFILE || PROFILE === cfg.profiles[0].id || !cfg.profiles.some(function (p) { return p.id === PROFILE; })); }
+  function onSupportEvent(source, type, d) {
+    if (!isReporter()) return;
+    d = d || {};
+    var who = nameOf(d), n, months, m;
+    switch (source + "." + type) {
+      case "Kick.StreamOnline": case "Twitch.StreamOnline": case "YouTube.BroadcastStarted":
+        return api("/api/stream/start", { platform: source }).catch(function () {});
+      case "Kick.KicksGifted":
+        n = firstNum(get(d, "gift.amount"), d.kicks, d.kicksAmount, d.kicks_amount, d.amount, get(d, "gift.kicks"));
+        if (n === null) n = deepNum(d, /^(amount|kicks|kicksamount|kicks_amount)$/i);
+        return postSupport({ platform: "kick", name: who, amount: n !== null ? String(n) : "", what: n === 1 ? "Kick" : "Kicks", kind: "tip", num: n, unit: "kicks" });
+      case "Kick.Subscription": return postSupport({ platform: "kick", name: who, what: "Subscribed", kind: "sub" });
+      case "Kick.Resubscription":
+        months = firstNum(d.cumulativeMonths, d.months, d.duration);
+        return postSupport({ platform: "kick", name: who, what: months > 1 ? "Resub · " + months + " mo" : "Resubscribed", kind: "resub" });
+      case "Kick.GiftSubscription": return giftSubs("kick", who, 1, 0, "Gifted Sub", "Gifted Subs");
+      case "Kick.MassGiftSubscription":
+        n = firstNum(d.count, d.total, d.quantity, d.gifts); if (n === null && Array.isArray(d.recipients)) n = d.recipients.length;
+        return giftSubs("kick", who, 0, n || 1, "Gifted Sub", "Gifted Subs");
+      case "Twitch.Cheer":
+        n = firstNum(d.bits, get(d, "message.bits"), get(d, "cheer.bits")); if (n === null) n = deepNum(d, /^bits$/i);
+        return postSupport({ platform: "twitch", name: who, amount: n !== null ? String(n) : "", what: n === 1 ? "Bit" : "Bits", kind: "tip", num: n, unit: "bits" });
+      case "Twitch.Sub":
+        n = firstNum(d.subTier, d.tier); if (n !== null && n >= 1000) n = n / 1000;
+        if (d.isPrime === true || d.subPlan === "Prime") return postSupport({ platform: "twitch", name: who, what: "Prime Sub", kind: "sub" });
+        return postSupport({ platform: "twitch", name: who, what: n > 1 ? "Tier " + n + " Sub" : "Subscribed", kind: "sub" });
+      case "Twitch.ReSub":
+        months = firstNum(d.cumulativeMonths, d.cumulative_months, d.months);
+        return postSupport({ platform: "twitch", name: who, what: months > 1 ? "Resub · " + months + " mo" : "Resubscribed", kind: "resub" });
+      case "Twitch.GiftSub": return giftSubs("twitch", who, 1, 0, "Gifted Sub", "Gifted Subs");
+      case "Twitch.GiftBomb":
+        n = firstNum(d.total, d.gifts, d.count, d.subBombCount); if (n === null && Array.isArray(d.recipients)) n = d.recipients.length;
+        return giftSubs("twitch", who, 0, n || 1, "Gifted Sub", "Gifted Subs");
+      case "Twitch.CharityDonation":
+        m = moneyOf(d); return postSupport({ platform: "twitch", name: who, amount: m.text, what: "Charity", kind: "tip", num: m.num, unit: "money", currency: m.currency });
+      case "YouTube.SuperChat": case "YouTube.SuperSticker":
+        m = moneyOf(d);
+        return postSupport({ platform: "youtube", name: who, amount: str(d.amount) || m.text, what: type === "SuperChat" ? "Super Chat" : "Super Sticker", kind: "tip", num: m.num, unit: "money", currency: m.currency });
+      case "YouTube.NewSponsor": return postSupport({ platform: "youtube", name: who, what: "New Member", kind: "member" });
+      case "YouTube.MemberMileStone":
+        months = firstNum(d.months, d.memberMonth, d.memberMonths, d.cumulativeMonths);
+        return postSupport({ platform: "youtube", name: who, what: months ? "Member · " + months + " mo" : "Member", kind: "member" });
+      case "YouTube.MembershipGift":
+        n = firstNum(d.count, d.total) || 1;
+        return postSupport({ platform: "youtube", name: who, amount: String(n), what: n === 1 ? "Gifted Membership" : "Gifted Memberships", kind: "gift", num: n, unit: "count" });
+      case "Streamlabs.Donation": case "Streamlabs.CharityDonation": case "StreamElements.Tip":
+      case "Kofi.Donation": case "TipeeeStream.Donation": case "Fourthwall.Donation":
+        m = moneyOf(d); return postSupport({ platform: "donation", name: who, amount: m.text, what: "Donation", kind: "tip", num: m.num, unit: "money", currency: m.currency });
+      case "Kofi.Subscription": case "Kofi.Resubscription":
+        m = moneyOf(d); return postSupport({ platform: "donation", name: who, amount: m.text, what: "Ko-fi Membership", kind: "sub", num: m.num, unit: "money", currency: m.currency });
+    }
+  }
+  if (LIVE) SB.listen(onSupportEvent);
+
+  function reportStatus() {
+    api("/api/status", { profile: profile.id, sb: cfg.streamerbot.enabled ? SB.state() : "off", kick: needsPlatform("kick") ? KICK.state() : "", size: [window.innerWidth, window.innerHeight] }).catch(function () {});
+  }
+  if (LIVE) setInterval(reportStatus, 4000);
+
+  window.__aoh = { onSupportEvent: onSupportEvent, chat: CHAT, modules: modules, cfg: function () { return cfg; } };
+  fitCanvas();
+  poll();
+})();
+</script>
+</body>
+</html>

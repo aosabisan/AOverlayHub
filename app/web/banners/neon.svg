@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 100" preserveAspectRatio="none"><defs><filter id="glow{id}" x="-10%" y="-40%" width="120%" height="180%"><feGaussianBlur stdDeviation="4"/></filter></defs>
+<rect x="8" y="8" width="384" height="84" rx="12" fill="#05060a" opacity="0.55"/>
+<rect x="8" y="8" width="384" height="84" rx="12" fill="none" stroke="{c1}" stroke-width="6" filter="url(#glow{id})" vector-effect="non-scaling-stroke"/>
+<rect x="8" y="8" width="384" height="84" rx="12" fill="none" stroke="{c1}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
+<rect x="15" y="15" width="370" height="70" rx="8" fill="none" stroke="{c2}" stroke-width="1.2" stroke-opacity="0.8" vector-effect="non-scaling-stroke"/></svg>

@@ -1,0 +1,56 @@
+AOVERLAY HUB - INSTALL (about 5 minutes)
+========================================
+Made and distributed by Aosabi 「青錆竜也」 (aosabi@pm.me).
+Use of this program is covered by LICENSE.txt.
+
+You need: Windows 10 or 11, and OBS Studio 28 or newer.
+Optional: Streamer.bot (for Kick, Twitch and YouTube support events and chat).
+
+
+STEP 1 - Unzip
+--------------
+Right-click the zip file > "Extract All...", then open the extracted folder.
+
+
+STEP 2 - Install
+----------------
+1. Double-click Install.cmd.
+   If Windows shows a blue "Windows protected your PC" box, click "More info",
+   then "Run anyway".
+2. Click Install. No admin rights are needed.
+3. The AOverlay Hub control panel opens in your web browser, with a setup wizard.
+
+
+STEP 3 - Follow the setup wizard
+--------------------------------
+It walks you through:
+  1. Streamer.bot (skip it if you don't use Streamer.bot)
+  2. Picking your overlays
+  3. The few details they need (for example your Kick channel name)
+  4. OBS: it makes one scene, "AOverlay Hub - Main", with one Browser source
+     in it, and adds that scene to the scenes you pick.
+
+For step 4, OBS has to be open, with its WebSocket server turned on:
+  OBS > Tools > WebSocket Server Settings > tick "Enable WebSocket server",
+  then press "Show Connect Info" and copy the Server Password into the wizard.
+(Prefer to set up OBS by hand? The wizard shows how, step by step.)
+
+
+STEP 4 - Arrange your overlays
+------------------------------
+Drag the overlays around in the preview and resize them from the corners.
+Click one to change how it looks and behaves. OBS updates within a second.
+
+
+STEP 5 (optional) - Spam moderation
+-----------------------------------
+Open the Moderation tab, press "Download for Streamer.bot", and import that
+file in Streamer.bot (Import button at the top). Details are in README.txt.
+
+
+Updating from 1.0: run Install.cmd from the new version. Your settings are kept
+and moved into a profile called "Main". Your OBS scene from 1.0 keeps working;
+running "Set up in OBS" again makes the new "AOverlay Hub - Main" scene.
+
+Everything else (profiles, moderation, Rumble, Kick chat, text styles,
+troubleshooting) is in README.txt.
