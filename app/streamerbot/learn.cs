@@ -2,10 +2,12 @@
 //  AOverlay Hub - learn spam phrases from bans (Kick, Twitch, YouTube)
 //  Copyright (c) 2026 Aosabi 「青錆竜也」 aosabi@pm.me. All Rights Reserved. See AOverlay Hub's LICENSE.txt.
 //
-//  When you or a mod bans someone, their last message is added to the spam phrase list in
-//  AOverlay Hub (it shows up there straight away). Whether this is on, the shortest phrase it
-//  will learn, and whether it says so in chat are set in AOverlay Hub > Moderation.
-//  Mods can undo the newest one with !undophrase.
+//  When you or a mod bans someone who had sent fewer than 4 chat messages in total (a typical spam
+//  bot), their FIRST message is added to the spam phrase list in AOverlay Hub (it shows up there
+//  straight away). The message limit, the shortest phrase it will learn, whether it says so in
+//  chat and what it says are set in AOverlay Hub > Moderation. The moderation action keeps the
+//  message count and the first message. Mods can undo the newest one with the undo command
+//  (!undophrase unless you changed it).
 //
 //  Triggers: Kick > User Banned, Twitch > User Banned, YouTube > User Banned
 // =====================================================================
@@ -31,14 +33,18 @@ public class CPHInline
             long flagged = CPH.GetGlobalVar<long>("aohFlag_" + platform + "_" + uid, false);
             if (flagged > 0 && (DateTime.UtcNow - new DateTime(flagged, DateTimeKind.Utc)).TotalMinutes < 5) return true;
 
-            string last = CPH.GetGlobalVar<string>("aohLast_" + platform + "_" + uid, false);
-            if (string.IsNullOrWhiteSpace(last)) return true;
-            last = last.Replace("\r", " ").Replace("\n", " ").Trim();
+            // the first message and the number of messages are kept by the moderation action
+            string fk = "aohFirst_" + platform + "_" + uid;
+            string first = CPH.GetGlobalVar<string>(fk, true);
+            if (string.IsNullOrWhiteSpace(first)) return true;   // not seen as a new chatter: nothing to learn
+            first = first.Replace("\r", " ").Replace("\n", " ").Trim();
+            int count = CPH.GetGlobalVar<int>("aohCount_" + platform + "_" + uid, true);
 
-            string r = Post("/api/mod/learn", "{\"text\":" + J(last) + ",\"user\":" + J(Arg("userName")) + ",\"platform\":" + J(platform) + "}");
-            CPH.SetGlobalVar("aohLast_" + platform + "_" + uid, "", false);
-            if (r != null && r.Contains("\"announce\":true"))
-                Reply(platform, "Banned message added to the spam phrase list. Mods can undo it with !undophrase");
+            // AOverlay Hub applies the rule (fewer than the set number of messages) and the settings
+            string r = Post("/api/mod/learn", "{\"text\":" + J(first) + ",\"user\":" + J(Arg("userName")) + ",\"platform\":" + J(platform) + ",\"count\":" + count + "}");
+            CPH.UnsetGlobalVar(fk, true);
+            string say = ReadString(r, "say");
+            if (say != "") Reply(platform, say);
         }
         catch (Exception ex) { CPH.LogError("[AOverlay Hub learn] " + ex.Message); }
         return true;
@@ -82,6 +88,13 @@ public class CPHInline
             else sb.Append(c);
         }
         return sb.Append('"').ToString();
+    }
+
+    static string ReadString(string json, string key)
+    {
+        if (string.IsNullOrEmpty(json)) return "";
+        var m = System.Text.RegularExpressions.Regex.Match(json, "\"" + key + "\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
+        return m.Success ? System.Text.RegularExpressions.Regex.Unescape(m.Groups[1].Value) : "";
     }
 
     static string Post(string path, string json)

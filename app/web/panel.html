@@ -119,6 +119,7 @@
   .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
   .grid4 label { font-size: 11px; color: var(--muted); }
   .btns { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 10px; }
+  .dbg { background: #120b21; border: 1px solid #3d2b63; border-radius: 8px; padding: 8px 10px; font-size: 11.5px; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 6px 0; }
   .note { background: #1b1330; border: 1px solid #3d2b63; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; color: #e2d8f7; margin: 8px 0; }
   .note.warn { background: #2a2312; border-color: #574519; color: #f7e3b5; }
   .note.ok { background: #24153d; border-color: #6d3fc9; color: #e4d6ff; }
@@ -213,6 +214,7 @@
     <div class="menu" id="menuMore"><button>More &#9662;</button>
       <div class="drop">
         <button data-act="connections">Connections (Streamer.bot, Kick, Rumble, OBS)</button>
+        <button data-act="music">Music (players, browser connector)</button>
         <button data-act="obs">Set up this profile in OBS</button>
         <button data-act="canvas">Screen size</button>
         <hr>
@@ -279,7 +281,6 @@
 <script>
 (function () {
   "use strict";
-  var AOVERLAY_RELEASES = "https://github.com/aosabisan/AOverlayMusic/releases";
   var cfg = AOH.normalizeConfig({});
   var profId = null, selId = null, status = null, fonts = [];
   var $ = function (s, r) { return (r || document).querySelector(s); };
@@ -832,14 +833,91 @@
     var t = el("button", { class: "small" }, "Send a test message"); t.onclick = testChat;
     b.appendChild(t); box.appendChild(b);
   }
+  function musicSummary(r) {
+    var names = (r.tracks || []).map(function (x) { return (x.source ? x.source + ": " : "") + x.name; });
+    var h = names.length ? "Playing right now: <b>" + esc(names.join("  •  ")) + "</b>" : "Nothing is playing right now (or the players are switched off in Music settings).";
+    h += "<br>Browser connector: " + (r.connector ? "working (" + esc((r.connectorSites || []).join(", ")) + ")" : "not set up. It's only needed for Spotify's web player, and to catch Suno and SoundCloud in background tabs.");
+    return h;
+  }
   function musicExtras(box, o) {
-    var s = o.settings;
-    if (s.source !== "aoverlay") return;
-    var n = el("div", { class: "note" }, "Checking for AOverlay for Stream Music...");
+    if (o.settings.source !== "builtin") return;
+    var n = el("div", { class: "note" }, "Looking for what's playing...");
     box.appendChild(n);
-    api("/api/probe-aoverlay?port=" + encodeURIComponent(s.aoverlayPort)).then(function (r) {
-      if (r.ok) { n.className = "note ok"; n.innerHTML = "AOverlay for Stream Music is running. Change which players it watches in its own settings window."; }
-      else { n.className = "note warn"; n.innerHTML = "AOverlay for Stream Music isn't running (or isn't installed). Get it from its official page: <a href=\"" + AOVERLAY_RELEASES + "\" target=\"_blank\">AOverlay for Stream Music releases</a>, or pick \"A text file\" as the song source."; }
+    api("/api/music/debug").then(function (r) { n.className = "note ok"; n.innerHTML = musicSummary(r); }).catch(function () { n.className = "note warn"; n.textContent = "Couldn't check what's playing. Is AOverlay still running?"; });
+    var b = el("div", { class: "btns" }); var mb = el("button", { class: "small" }, "Music settings (players, browser connector)...");
+    mb.onclick = function () { showMusic(); }; b.appendChild(mb); box.appendChild(b);
+  }
+  var MUSIC_PLAYERS = [["vlc", "VLC media player"], ["spotify", "Spotify"], ["suno", "Suno (in a browser)"], ["soundcloud", "SoundCloud (in a browser)"]];
+  function showMusic() {
+    var d = info("Music", "<p class='sub'>AOverlay finds the song that's playing by itself, no other program needed. These settings are shared by every Now Playing overlay.</p>");
+    var c = el("div"), m = cfg.music = AOH.fillDefaults(cfg.music, AOH.MUSIC_DEFAULTS);
+    c.appendChild(el("h3", { text: "Players to watch" }));
+    MUSIC_PLAYERS.forEach(function (p) {
+      var g = el("div", { class: "grid2" });
+      g.appendChild(control(m, { k: p[0], label: p[1], t: "check" }, connAfter));
+      g.appendChild(control(m, { k: p[0] + "Label", label: "Name shown on screen", t: "text", help: "Leave empty to show just the song." }, connAfter));
+      c.appendChild(g);
+    });
+    c.appendChild(control(m, { k: "showArtist", label: "Add the artist after the song name when the player tells us", t: "check" }, connAfter));
+
+    c.appendChild(el("h3", { text: "VLC" }));
+    c.appendChild(el("div", { class: "note" }, "VLC works as it is: the song is read from VLC's title bar. To also know when a song is <b>paused</b>, turn on VLC's web interface: <b>Tools &gt; Preferences</b>, <b>Show settings: All</b>, <b>Interface &gt; Main interfaces</b>, tick <b>Web</b>, then set a password under <b>Main interfaces &gt; Lua</b>. AOverlay reads VLC's own settings, so the two boxes below are normally left alone."));
+    var g2 = el("div", { class: "grid2" });
+    g2.appendChild(control(m, { k: "vlcPort", label: "VLC web port (0 = automatic)", t: "number", min: 0, max: 65535 }, connAfter));
+    g2.appendChild(control(m, { k: "vlcPassword", label: "VLC web password (empty = automatic)", t: "secret" }, connAfter));
+    c.appendChild(g2);
+
+    c.appendChild(el("h3", { text: "Browser connector" }));
+    var cst = el("div", { class: "note" }, "Checking...");
+    c.appendChild(cst);
+    var url = location.protocol + "//localhost:" + location.port + "/browser-connector.user.js";
+    c.appendChild(el("div", {}, "<p>Suno, Spotify's web player and SoundCloud play in your browser, and Windows only tells AOverlay about some of them (Spotify's web player never). This small connector lets those sites tell AOverlay directly, even from a background tab. You do this once in each browser you play music in.</p>" +
+      "<ol class='how'><li><b>Install Tampermonkey</b>, a free browser add-on that runs small scripts like this one: <a href='https://www.tampermonkey.net/' target='_blank'>tampermonkey.net</a>. Using Chrome, Edge or Brave? Also open Tampermonkey's Details page and switch on <b>Allow user scripts</b>.</li>" +
+      "<li><b>Open this link</b> in the browser you play music in, then press <b>Install</b> (or <b>Update</b>) on the page Tampermonkey shows: <a href='" + esc(url) + "' target='_blank'>" + esc(url) + "</a></li>" +
+      "<li><b>Reload</b> your Suno, Spotify or SoundCloud tab and play a song. The line above changes to \"working\".</li></ol>" +
+      "<p class='muted'>If you ever had an older AOverlay connector in Tampermonkey (AOverlay for Stream Music), delete it from Tampermonkey's dashboard. If AOverlay ever starts on a different port than " + esc(location.port) + ", do step 2 again.</p>"));
+
+    c.appendChild(el("h3", { text: "Text file" }));
+    var tf = el("div"); c.appendChild(tf);
+    c.appendChild(control(m, { k: "writeFile", label: "Also write the current song to a text file (for other programs)", t: "check" }, function () { connAfter(); fillDbg(); }));
+    var tfNote = el("div", { class: "note" }); c.appendChild(tfNote);
+
+    c.appendChild(el("h3", { text: "What can AOverlay see?" }));
+    var dbgBtn = el("button", { class: "small" }, "Show what AOverlay sees right now");
+    var dbgOut = el("pre", { class: "dbg" }); dbgOut.style.display = "none";
+    dbgBtn.onclick = function () { dbgOut.style.display = "block"; dbgOut.textContent = "Looking..."; api("/api/music/debug").then(function (r) { dbgOut.textContent = JSON.stringify(r, null, 2); }).catch(function () { dbgOut.textContent = "Couldn't ask AOverlay."; }); };
+    var bw = el("div", { class: "btns" }); bw.appendChild(dbgBtn); c.appendChild(bw); c.appendChild(dbgOut);
+    c.appendChild(el("div", { class: "note" }, "Nothing showing? Make sure the player is actually playing (not paused), the player is ticked above, and for browsers either set up the connector or keep the tab visible."));
+
+    var oldBox = el("div"); c.appendChild(oldBox);
+    api("/api/music/old-settings").then(function (r) {
+      if (!r.found) return;
+      oldBox.appendChild(el("h3", { text: "From AOverlay for Stream Music" }));
+      oldBox.appendChild(el("div", { class: "note" }, "The older separate program left its settings on this computer. Copy its players, names, VLC details and the look of its overlay into AOverlay?"));
+      var ob = el("button", { class: "small" }, "Copy those settings now");
+      ob.onclick = function () { var n = AOH.importOldMusic(cfg, r.settings); cfg.music.oldChecked = true; save(true); commitHistory(); renderAll(); loadPreview(); toast(n ? "Copied. " + n + " Now Playing overlay" + (n === 1 ? " has" : "s have") + " its look." : "Copied the players and names. (You have no Now Playing overlay yet.)"); };
+      var ow = el("div", { class: "btns" }); ow.appendChild(ob); oldBox.appendChild(ow);
+    }).catch(function () {});
+    function fillDbg() {
+      api("/api/music/debug").then(function (r) {
+        cst.className = "note " + (r.connector ? "ok" : "warn");
+        cst.innerHTML = "Browser connector: " + (r.connector ? "working (" + esc((r.connectorSites || []).join(", ")) + ")" : "not set up yet. Needed for Spotify's web player; helps with Suno and SoundCloud in background tabs.");
+        tfNote.style.display = m.writeFile ? "" : "none";
+        tfNote.innerHTML = "The song is written to <code>" + esc(r.textFile) + "</code> (just the song, e.g. <code>VLC: Song - Artist</code> when several play).";
+      }).catch(function () {});
+    }
+    fillDbg();
+    d.insertBefore(c, d.lastElementChild);
+  }
+  // Asks once whether to copy over the settings of the older separate program.
+  function offerOldMusic() {
+    if (!cfg.wizardDone || (cfg.music && cfg.music.oldChecked)) return;
+    api("/api/music/old-settings").then(function (r) {
+      if (cfg.music.oldChecked) return;
+      if (!r.found) { cfg.music.oldChecked = true; save(); return; }
+      var d = info("Copy your AOverlay for Stream Music settings?",
+        "<p>Your older <b>AOverlay for Stream Music</b> program left its settings on this computer. AOverlay now does that job itself, so you can uninstall the old program.</p><p>Copy its players, their names, VLC details and the look of its overlay into your Now Playing overlays? (You can also do this later in <b>More &gt; Music</b>.)</p>",
+        [["Not now", function () { cfg.music.oldChecked = true; save(true); closeModal("mInfo"); renderAll(); }], ["Copy them", function () { var n = AOH.importOldMusic(cfg, r.settings); cfg.music.oldChecked = true; save(true); commitHistory(); closeModal("mInfo"); renderAll(); loadPreview(); toast(n ? "Copied your old settings." : "Copied the players and names."); }, true]]);
     }).catch(function () {});
   }
   function showKickHelp(ch) {
@@ -912,6 +990,7 @@
     newStream: function () { api("/api/stream/start", {}).then(function () { toast("New stream started: overlays set to \"hide until the first support\" are hidden again until someone supports."); }); },
     reload: function () { api("/api/event", { type: "reload" }).then(function () { toast("Asked OBS to reload the overlays."); loadPreview(); }); },
     connections: function () { showConnections(); },
+    music: function () { showMusic(); },
     obs: function () { wizard(4, true); },
     canvas: function () { showCanvas(); },
     export: function () {
@@ -1159,7 +1238,7 @@
         var s = o.settings, sec = el("div");
         if (o.type === "music") {
           sec.appendChild(el("h3", { text: o.name }));
-          sec.appendChild(control(s, { k: "source", label: "Where should the song come from?", t: "select", opts: [["aoverlay", "AOverlay for Stream Music"], ["file", "A text file"], ["off", "Off"]] }, function () { save(); }));
+          sec.appendChild(control(s, { k: "source", label: "Where should the song come from?", t: "select", opts: [["builtin", "Built in (VLC, Spotify, Suno, SoundCloud)"], ["file", "A text file"], ["off", "Off"]] }, function () { save(); }));
           var n = el("div"); sec.appendChild(n); musicExtras(n, o);
           sec.appendChild(control(s, { k: "filePath", label: "Text file (only if you picked \"A text file\")", t: "text" }, function () { save(); }));
         } else if (o.type === "web" && s.kind !== "sbChat" && !s.url) {
@@ -1219,7 +1298,7 @@
       body.innerHTML = "<h1>All set</h1><p class='sub'>Now arrange your overlays: drag them around in the preview and resize them from the corners. Pick an overlay to change how it looks and behaves.</p>" +
         "<ul><li>Use <b>Test</b> at the top to send a test supporter, chat message or emotes.</li><li>Want spam protection? Open the <b>Moderation</b> tab.</li><li>AOverlay Hub runs in the background (look for its icon by the clock). It needs to be running while you stream.</li></ul>";
       btn("Back", back);
-      btn("Finish", function () { cfg.wizardDone = true; save(true); close(); }, true);
+      btn("Finish", function () { cfg.wizardDone = true; save(true); close(); offerOldMusic(); }, true);
     }
   }
 
@@ -1291,10 +1370,31 @@
     box.appendChild(control(s, { k: "trustedAfter", label: "Trust chatters after this many normal messages", t: "number", min: 0, max: 1000, unit: "(0 = never)" }, after));
     box.appendChild(el("div", { class: "muted", style: "font-size:12px;margin:-4px 0 10px" }, "The streamer is always safe."));
     box.appendChild(el("h3", { text: "Learning and commands" }));
-    box.appendChild(control(s, { k: "learn", label: "When you or a mod bans someone, add their last message to the list", t: "check" }, after));
-    box.appendChild(control(s, { k: "announce", label: "Say so in chat", t: "check" }, after));
-    box.appendChild(control(s, { k: "minLength", label: "Shortest phrase that can be learned or added in chat", t: "number", min: 3, max: 200, unit: "letters" }, after));
-    box.appendChild(control(s, { k: "commands", label: "Chat commands for you and mods: !addphrase, !delphrase, !undophrase, !phrasemode", t: "check" }, after));
+    box.appendChild(control(s, { k: "learn", label: "Learn from bans: when you or a mod bans someone who sent very few messages, add their FIRST message to the list", t: "check" }, function () { after(true); }));
+    if (s.learn) {
+      box.appendChild(control(s, { k: "learnMaxMessages", label: "Only if they had sent fewer than this many chat messages in total", t: "number", min: 2, max: 1000, unit: "messages", help: "Bots usually spam right away, so a ban on someone with fewer than 4 messages teaches the list their first message. Regulars are never learned from. Messages are counted by the Streamer.bot action while it runs, so someone who chatted before you imported it looks new at first." }, after));
+      box.appendChild(control(s, { k: "minLength", label: "Shortest phrase that can be learned or added in chat", t: "number", min: 3, max: 200, unit: "letters" }, after));
+    }
+    box.appendChild(control(s, { k: "announce", label: "Say so in chat when a phrase is learned", t: "check" }, function () { after(true); }));
+    if (s.announce) box.appendChild(control(s, { k: "announceText", label: "What to say in chat", t: "text", help: "{undo} becomes your undo command word, {user} the banned person's name." }, after));
+    box.appendChild(control(s, { k: "commands", label: "Chat commands for you and mods", t: "check" }, function () { after(true); }));
+    if (s.commands) {
+      var cg = el("div", { class: "grid2" });
+      [["cmdAdd", "Add a phrase", "!addphrase"], ["cmdDel", "Remove a phrase", "!delphrase"], ["cmdUndo", "Undo the last learned phrase", "!undophrase"], ["cmdMode", "Switch ban / timeout", "!phrasemode"]].forEach(function (x) {
+        var inp = el("input", { type: "text", placeholder: x[2] }); inp.value = s[x[0]] || x[2];
+        inp.onchange = function () {
+          var w = inp.value.replace(/\s+/g, "").toLowerCase();
+          if (w && /^[\p{L}\p{N}]/u.test(w)) w = "!" + w;
+          if (w.length < 2) w = x[2];
+          var taken = ["cmdAdd", "cmdDel", "cmdUndo", "cmdMode"].some(function (k) { return k !== x[0] && (s[k] || "") === w; });
+          if (taken) { toast("Another command already uses " + w + "."); w = s[x[0]] || x[2]; }
+          s[x[0]] = w; inp.value = w; saveModSettings();
+        };
+        cg.appendChild(field(x[1], inp, "Default " + x[2]));
+      });
+      box.appendChild(cg);
+      box.appendChild(el("div", { class: "muted", style: "font-size:12px;margin:-4px 0 10px" }, "Only you and moderators can use them. Type a new word to change it; it takes effect within 5 seconds."));
+    }
     box.appendChild(el("h3", { text: "Chat delay" }));
     box.appendChild(el("p", { class: "muted", style: "font-size:13px" }, "The delayed chat holds messages for a moment, so spam is removed before it ever appears on stream. 2–3 seconds is usually enough."));
     var chats = allOverlays().filter(function (x) { return x.o.type === "chat"; });
@@ -1446,6 +1546,7 @@
     renderAll(); loadPreview(); refreshStatus();
     api("/api/mod").then(function (r) { mod.v = r.v; mod.data = r.data; mod.ids = {}; (r.data.phrases || []).forEach(function (p) { mod.ids[p.id] = true; }); }).catch(function () {});
     if (!cfg.wizardDone) wizard(0);
+    else { offerOldMusic(); if (location.hash === "#music") showMusic(); }
   }).catch(function () { document.body.innerHTML = "<p style='padding:40px'>Can't reach AOverlay Hub. Start it from the Start menu, then reload this page.</p>"; });
 })();
 </script>

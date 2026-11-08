@@ -45,7 +45,7 @@ public class CPHInline
 
         string uid = Arg("userId");
         string message = Arg("message");
-        if (uid != "") CPH.SetGlobalVar("aohLast_" + platform + "_" + uid, message, false);   // so a ban can learn the phrase
+        TrackMessage(platform, uid, message);   // so a ban can learn a new chatter's first message
         if (HandleCommand(platform, message)) return;
 
         string msg = Normalize(message);
@@ -127,14 +127,42 @@ public class CPHInline
         CPH.SetGlobalVar("aohImportedOldList", true, true);
     }
 
+    // Counts every chat message per person, and keeps the FIRST one while they have sent fewer than
+    // "learnMaxMessages" (default 4). If someone like that is banned, learn.cs adds that first message
+    // to the spam list. Past the limit the stored message is thrown away, so regulars cost nothing.
+    void TrackMessage(string platform, string uid, string message)
+    {
+        if (uid == "") return;
+        int max = ToInt(Get("learnMaxMessages"), 4);
+        string ck = "aohCount_" + platform + "_" + uid, fk = "aohFirst_" + platform + "_" + uid;
+        int c = CPH.GetGlobalVar<int>(ck, true);
+        if (c >= max) return;
+        if (c == 0)
+        {
+            string first = (message ?? "").Replace("\r", " ").Replace("\n", " ").Trim();
+            if (first.Length > 300) first = first.Substring(0, 300);
+            CPH.SetGlobalVar(fk, first, true);
+        }
+        CPH.SetGlobalVar(ck, c + 1, true);
+        if (c + 1 >= max) CPH.UnsetGlobalVar(fk, true);
+    }
+
     // ---------------- chat commands for the streamer and mods ----------------
+    // The words are set in AOverlay Hub > Moderation. AOverlay Hub is always sent the standard name.
+    string Word(string key, string def) { string w = Get(key); return w == "" ? def : w.ToLowerInvariant(); }
+
     bool HandleCommand(string platform, string message)
     {
         string m = (message ?? "").Trim();
-        if (!m.StartsWith("!")) return false;
+        if (m.Length < 2) return false;
         string[] parts = m.Split(new[] { ' ' }, 2);
-        string cmd = parts[0].ToLowerInvariant();
-        if (cmd != "!phrasemode" && cmd != "!addphrase" && cmd != "!delphrase" && cmd != "!undophrase") return false;
+        string word = parts[0].ToLowerInvariant();
+        string cmd = "";
+        if (word == Word("cmdMode", "!phrasemode")) cmd = "!phrasemode";
+        else if (word == Word("cmdAdd", "!addphrase")) cmd = "!addphrase";
+        else if (word == Word("cmdDel", "!delphrase")) cmd = "!delphrase";
+        else if (word == Word("cmdUndo", "!undophrase")) cmd = "!undophrase";
+        if (cmd == "") return false;
         if (Get("commands") != "1") return true;
         if (!IsOwner(platform) && !IsTrue("isModerator")) return true;   // viewers can't use these
         string rest = parts.Length > 1 ? parts[1].Trim() : "";

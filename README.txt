@@ -1,5 +1,5 @@
-AOVERLAY HUB 1.1
-================
+﻿AOVERLAY HUB 1.1.1
+==================
 Made and distributed by Aosabi 「青錆竜也」 (aosabi@pm.me).
 Use of this program is covered by LICENSE.txt.
 
@@ -10,6 +10,19 @@ horizontal or vertical, colours, fonts, outlines, shadows...) from one control
 panel. Nothing else has to stay open in a web browser while you stream.
 
 Quick install steps are in INSTALL.txt.
+
+
+WHAT'S NEW IN 1.1.1
+-------------------
+- The song detection of AOverlay for Stream Music is now built in. Now Playing
+  finds the song from VLC, the Spotify app, Suno, Spotify's web player and
+  SoundCloud by itself: no second program, no second tray icon, no download
+  from another page. Players, names, VLC details and the browser connector
+  are in More > Music. If you used the separate AOverlay for Stream Music, the
+  control panel offers to copy its settings and the look of its overlay; after
+  that you can uninstall it.
+- One Start menu folder, "AOverlay", with one launcher, "AOverlay" (the control
+  panel), and "Uninstall AOverlay".
 
 
 WHAT'S NEW IN 1.1
@@ -43,8 +56,8 @@ Built in:
                     wait a few seconds first, so anything deleted by mods,
                     AutoMod or the spam moderation, and banned users, never
                     reach the screen.
-  Now Playing     - the song that's playing, from AOverlay for Stream Music or
-                    from a text file.
+  Now Playing     - the song that's playing (VLC, Spotify, Suno, SoundCloud,
+                    found by AOverlay itself) or read from a text file.
   Emote Combo     - counts emotes as chat uses them: "x7" next to each one,
                     rows appear and fade away.
   Emote Rain      - emotes from chat fall (or rise, or fly sideways) across
@@ -65,8 +78,8 @@ You can add as many overlays as you like, including several of the same kind.
 
 THE CONTROL PANEL
 -----------------
-Open it from the Start menu (AOverlay Hub), or double-click the AOverlay Hub
-icon by the clock.
+Open it from the Start menu (AOverlay), or double-click the AOverlay icon
+by the clock.
 
   Overlays tab
     Left:    the overlays in this profile. The top of the list is drawn on
@@ -163,10 +176,16 @@ In the Moderation tab:
     action learns them,
   - see the most recent timeouts and bans.
 
-Learning: when you or a mod bans someone by hand, their last message is added
-to the list (if it's long enough), and the bot can say so in chat.
+Learning: when you or a mod bans someone who had sent fewer than 4 chat
+messages in total (a typical spam bot), their FIRST message is added to the
+list (if it's long enough). People with more messages are never learned from.
+The limit of 4 can be changed. Messages are counted by the Streamer.bot action
+while it runs, so someone who chatted before you imported it looks new at
+first. "Say so in chat" is off by default; when you turn it on you choose
+what the bot says ({undo} becomes your undo command, {user} the banned name).
 
-Chat commands for you and mods (can be turned off):
+Chat commands for you and mods (can be turned off). These are the standard
+words; each one can be changed in the Moderation tab:
   !addphrase <text>        add a phrase
   !delphrase <text>        remove a phrase
   !undophrase              remove the last phrase that was added
@@ -240,13 +259,45 @@ one a coloured dot is shown instead. You can also choose your own pictures
 NOW PLAYING
 -----------
 Song source:
-  AOverlay for Stream Music - reads the song from AOverlay for Stream Music
-      (a free program by Aosabi 「青錆竜也」 that watches VLC, Spotify, Suno and
-      SoundCloud). Get it only from its official page:
-      https://github.com/aosabisan/AOverlayMusic/releases
+  Built in - AOverlay finds the song itself. It looks at VLC, the Spotify app,
+      and Suno, Spotify's web player and SoundCloud in your web browser. It
+      only looks while a Now Playing overlay is on, and nothing leaves your
+      computer.
   A text file - many music programs can write the current song into a text
       file. Type that file's full path.
   Off
+
+Players and names (More > Music in the control panel):
+  Untick a player to ignore it, and change what each is called on screen
+  (empty = just the song). "Add the artist" puts the artist after the song
+  name when the player tells us. Shared by every Now Playing overlay.
+  The look (font, colours, outline, background, scrolling, the text between
+  several songs...) is set per overlay, like every other overlay.
+
+VLC: works as it is (the song is read from VLC's title bar). To also know
+  when a song is paused, turn on VLC's web interface: Tools > Preferences,
+  Show settings: All, Interface > Main interfaces, tick Web, then set a
+  password under Main interfaces > Lua. AOverlay reads VLC's own settings.
+
+Spotify: the desktop app works with no setup. Spotify's web player needs the
+  browser connector.
+
+Suno and SoundCloud: seen while their tab is the visible tab. For all the
+  time, even in a background tab, use the browser connector.
+
+Browser connector (once per browser): More > Music shows three steps. You
+  install Tampermonkey (a free browser add-on), open AOverlay's connector link
+  and press Install, then reload your music tab. The panel says "working" when
+  it is. If you had the older AOverlay for Stream Music connector, delete it in
+  Tampermonkey.
+
+Text file for other programs: More > Music > "Also write the current song to
+  a text file" keeps the song in nowplaying.txt in AOverlay's settings folder.
+
+Moving from the separate AOverlay for Stream Music: open the control panel;
+  it offers to copy that program's settings. Then uninstall it from Windows'
+  Settings > Apps (it isn't needed any more, and two programs watching the same
+  players only wastes power).
 
 
 OBS
@@ -308,6 +359,6 @@ left, or More > Help).
 UNINSTALL
 ---------
 Settings > Apps > Installed apps > AOverlay Hub > Uninstall, or "Uninstall
-AOverlay Hub" in the Start menu. It asks whether to keep your settings. The
+AOverlay" in the Start menu (folder "AOverlay"). It asks whether to keep your settings. The
 AOverlay Hub scenes in OBS and the actions in Streamer.bot are left alone;
 delete them there if you like.

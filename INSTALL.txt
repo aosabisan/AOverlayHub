@@ -1,4 +1,4 @@
-AOVERLAY HUB - INSTALL (about 5 minutes)
+﻿AOVERLAY HUB - INSTALL (about 5 minutes)
 ========================================
 Made and distributed by Aosabi 「青錆竜也」 (aosabi@pm.me).
 Use of this program is covered by LICENSE.txt.
@@ -18,7 +18,7 @@ STEP 2 - Install
    If Windows shows a blue "Windows protected your PC" box, click "More info",
    then "Run anyway".
 2. Click Install. No admin rights are needed.
-3. The AOverlay Hub control panel opens in your web browser, with a setup wizard.
+3. The AOverlay control panel opens in your web browser, with a setup wizard.
 
 
 STEP 3 - Follow the setup wizard
@@ -48,7 +48,21 @@ Open the Moderation tab, press "Download for Streamer.bot", and import that
 file in Streamer.bot (Import button at the top). Details are in README.txt.
 
 
-Updating from 1.0: run Install.cmd from the new version. Your settings are kept
+STEP 6 (optional) - Now Playing
+-------------------------------
+Add the "Now Playing" overlay in the wizard (or the "+ Add" button). AOverlay
+finds the song from VLC, the Spotify app, Suno and SoundCloud by itself; no
+other program is needed. For Spotify's web player, or to catch Suno and
+SoundCloud in a background tab, open More > Music and follow the three steps
+for the browser connector.
+
+
+Updating from 1.1 (or 1.0): run Install.cmd from the new version. Your settings
+are kept. The Start menu folder "AOverlay Hub" becomes "AOverlay". If you used
+the separate AOverlay for Stream Music, the control panel offers to copy its
+settings; afterwards you can uninstall that program.
+
+Updating from 1.0 specifically: run Install.cmd from the new version. Your settings are kept
 and moved into a profile called "Main". Your OBS scene from 1.0 keeps working;
 running "Set up in OBS" again makes the new "AOverlay Hub - Main" scene.
 

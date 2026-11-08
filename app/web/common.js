@@ -5,7 +5,7 @@
 (function (root) {
   "use strict";
 
-  var VERSION = "1.1.0";
+  var VERSION = "1.1.1";
 
   function clone(o) { return o === undefined ? undefined : JSON.parse(JSON.stringify(o)); }
 
@@ -281,12 +281,12 @@
 
     music: {
       label: "Now Playing",
-      blurb: "Shows the song that's playing, from AOverlay for Stream Music or from a text file.",
+      blurb: "Shows the song that's playing. AOverlay finds it itself (VLC, Spotify, Suno, SoundCloud), or reads it from a text file.",
       box: { w: 900, h: 60, x: 30, y: 30 },
       defaults: {
-        source: "aoverlay", aoverlayPort: 8095, filePath: "",
+        source: "builtin", filePath: "",
         showLabel: true, label: "Now Playing", icon: "\u266A",
-        showSource: true, multiText: "{count} tracks open", hideWhenIdle: true, idleText: "Nothing playing",
+        showSource: true, showSourceSingle: true, multiText: "{count} tracks open", separator: "  \u2022  ", hideWhenIdle: true, idleText: "Nothing playing",
         orientation: "horizontal", scroll: "auto", direction: "left", speed: 50,
         text: { font: "Segoe UI", size: 26, bold: true, shadow: true },
         labelColor: "#3ddc84",
@@ -294,8 +294,7 @@
       },
       form: [
         { title: "Where the song comes from", fields: [
-          { k: "source", label: "Song source", t: "select", opts: [["aoverlay", "AOverlay for Stream Music"], ["file", "A text file"], ["off", "Off"]] },
-          { k: "aoverlayPort", label: "AOverlay port", t: "number", min: 1, max: 65535, help: "Leave at 8095 unless you changed it in AOverlay's settings.", show: function (s) { return s.source === "aoverlay"; } },
+          { k: "source", label: "Song source", t: "select", opts: [["builtin", "Built in (VLC, Spotify, Suno, SoundCloud)"], ["file", "A text file"], ["off", "Off"]] },
           { k: "filePath", label: "Text file", t: "text", help: "Full path to a file your music program writes the current song into, e.g. C:\\Music\\nowplaying.txt", show: function (s) { return s.source === "file"; } }
         ]},
         { title: "Words", fields: [
@@ -304,7 +303,9 @@
           { k: "icon", label: "Icon", t: "text", help: "Any symbol or emoji, or leave empty." },
           { k: "labelColor", label: "Label and icon colour", t: "color" },
           { k: "showSource", label: "Show where it's playing (e.g. \"VLC:\")", t: "check" },
+          { k: "showSourceSingle", label: "Show it even when only one song plays", t: "check", show: function (s) { return s.showSource; } },
           { k: "multiText", label: "Text when several songs play", t: "text", help: "{count} becomes the number of songs." },
+          { k: "separator", label: "Between several songs", t: "text", help: "What goes between the songs when several play at once." },
           { k: "hideWhenIdle", label: "Hide when nothing is playing", t: "check" },
           { k: "idleText", label: "Text when nothing is playing", t: "text", show: function (s) { return !s.hideWhenIdle; } }
         ]},
@@ -506,6 +507,12 @@
      ===================================================================== */
   function newId(p) { return (p || "o") + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
   function newProfile(name) { return { id: newId("p"), name: name || "Main", overlays: [] }; }
+  // Which players the built-in song detection watches (shared by every Now Playing overlay).
+  var MUSIC_DEFAULTS = {
+    vlc: true, suno: true, spotify: true, soundcloud: true,
+    vlcLabel: "VLC", sunoLabel: "Suno", spotifyLabel: "Spotify", soundcloudLabel: "SoundCloud",
+    vlcPort: 0, vlcPassword: "", showArtist: true, writeFile: false, oldChecked: false
+  };
   function defaultConfig() {
     return {
       schema: 2,
@@ -514,6 +521,7 @@
       obs: { host: "127.0.0.1", port: 4455, password: "" },
       kick: { channel: "", chatroom: "" },
       rumble: { url: "", every: 5, liveChat: false },
+      music: clone(MUSIC_DEFAULTS),
       wizardDone: false,
       profiles: []
     };
@@ -523,6 +531,8 @@
     // Botrix widgets were removed in 1.1: keep them as plain links so nothing disappears.
     if (o.type === "web" && o.settings && /^botrix/.test(o.settings.kind || "")) o.settings.kind = "link";
     o.settings = fillDefaults(o.settings || {}, TYPES[o.type].defaults);
+    // 1.1.0 used a separate program called AOverlay for Stream Music; its job is built in now.
+    if (o.type === "music" && o.settings.source === "aoverlay") o.settings.source = "builtin";
     ["text"].forEach(function (k) { if (TYPES[o.type].defaults[k]) o.settings[k] = fillDefaults(o.settings[k], textStyle(TYPES[o.type].defaults[k])); });
     if (o.type === "web" && o.settings.kind === "sbChat") o.settings.sbchat = fillDefaults(o.settings.sbchat || {}, SBCHAT_DEFAULTS);
     if (typeof o.visible !== "boolean") o.visible = true;
@@ -565,6 +575,49 @@
     });
     return cfg;
   }
+  // Copies what the older AOverlay for Stream Music program had (players, names, VLC details and the
+  // look of its overlay) into this config. Returns how many Now Playing overlays got its look.
+  function importOldMusic(cfg, old) {
+    if (!old || typeof old !== "object") return 0;
+    var m = cfg.music = fillDefaults(cfg.music || {}, MUSIC_DEFAULTS);
+    ["vlc", "suno", "spotify", "soundcloud"].forEach(function (k) {
+      if (typeof old[k + "Enabled"] === "boolean") m[k] = old[k + "Enabled"];
+      if (typeof old[k + "Label"] === "string") m[k + "Label"] = old[k + "Label"];
+    });
+    m.vlcPort = Math.max(0, Math.round(Number(old.vlcPort) || 0));
+    m.vlcPassword = String(old.vlcPassword || "");
+    if (typeof old.showArtist === "boolean") m.showArtist = old.showArtist;
+    var num = function (v, d) { v = Number(v); return isFinite(v) ? v : d; };
+    var n = 0;
+    cfg.profiles.forEach(function (p) {
+      p.overlays.forEach(function (o) {
+        if (o.type !== "music") return;
+        var s = o.settings, t = s.text;
+        if (typeof old.headerText === "string") { s.label = old.headerText; s.showLabel = !!old.headerText.trim(); s.icon = ""; }
+        if (old.fontFamily) t.font = String(old.fontFamily);
+        t.size = num(old.fontSize, t.size); t.bold = old.fontBold !== false; t.italic = !!old.fontItalic;
+        if (old.textColor) t.color = String(old.textColor);
+        t.see = num(old.textTransparency, 0);
+        t.outline = !!old.outlineEnabled;
+        if (old.outlineColor) t.outlineColor = String(old.outlineColor);
+        t.outlineWidth = num(old.outlineThickness, t.outlineWidth); t.outlineFade = num(old.outlineFade, t.outlineFade); t.outlineSee = num(old.outlineTransparency, 0);
+        t.shadow = old.textShadow !== false; t.shadowSee = num(old.shadowTransparency, 0);
+        if (old.highlightColor) s.labelColor = String(old.highlightColor);
+        s.bgOn = old.showBackground !== false;
+        if (old.backgroundColor) s.bgColor = String(old.backgroundColor);
+        s.bgSee = num(old.backgroundTransparency, s.bgSee); s.radius = num(old.cornerRadius, s.radius);
+        o.opacity = Math.max(0.05, Math.min(1, 1 - num(old.overallTransparency, 0) / 100));
+        s.speed = num(old.scrollSpeed, s.speed); s.scroll = old.alwaysScroll ? "always" : "auto";
+        s.hideWhenIdle = old.hideWhenIdle !== false;
+        if (typeof old.idleText === "string") s.idleText = old.idleText;
+        if (typeof old.multipleTracksText === "string") s.multiText = old.multipleTracksText;
+        if (typeof old.separator === "string") s.separator = old.separator;
+        s.showSource = true; s.showSourceSingle = !!old.showSourceSingle;
+        n++;
+      });
+    });
+    return n;
+  }
   function profileById(cfg, id) {
     for (var i = 0; i < cfg.profiles.length; i++) if (cfg.profiles[i].id === id) return cfg.profiles[i];
     return cfg.profiles[0];
@@ -595,6 +648,6 @@
     clone: clone, fillDefaults: fillDefaults, getPath: getPath, setPath: setPath,
     rgba: rgba, fontStack: fontStack, textStyle: textStyle, textFields: textFields, listOf: listOf,
     defaultConfig: defaultConfig, normalizeConfig: normalizeConfig, newOverlay: newOverlay, newId: newId,
-    newProfile: newProfile, profileById: profileById, obsNames: obsNames
+    newProfile: newProfile, profileById: profileById, importOldMusic: importOldMusic, MUSIC_DEFAULTS: MUSIC_DEFAULTS, obsNames: obsNames
   };
 })(window);

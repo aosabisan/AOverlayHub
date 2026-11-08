@@ -10,15 +10,20 @@ param([switch]$Silent, [string]$InstallDir = '', [switch]$NoDesktop, [switch]$No
 
 $ErrorActionPreference = 'Stop'
 $AppTitle = 'AOverlay Hub'
-$AppVersion = '1.1.0'
+$AppVersion = '1.1.1'
 $Publisher = 'Aosabi 「青錆竜也」'
 $Credit = 'Made and distributed by Aosabi 「青錆竜也」  aosabi@pm.me'
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SourceApp = Join-Path $Here 'app'
 $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AOverlayHub'
 $RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-$StartMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) $AppTitle
-$DesktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) "$AppTitle.lnk"
+# One Start menu folder, "AOverlay", with one launcher, "AOverlay" (the control panel, which also has the music settings).
+$Launcher = 'AOverlay'
+$StartMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) $Launcher
+$DesktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) "$Launcher.lnk"
+# What version 1.1.0 and older made, replaced by the above.
+$OldStartMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) $AppTitle
+$OldDesktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) "$AppTitle.lnk"
 $PowerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $DataDir = Join-Path $env:APPDATA $AppTitle
 
@@ -66,7 +71,7 @@ function Install-Hub([string]$dir, [bool]$desktop, [bool]$autostart, [bool]$laun
 
     & $step 'Copying files...'
     if (Test-Path -LiteralPath $dir) {
-        foreach ($old in @('Hub.ps1', 'Uninstall.ps1', 'web', 'streamerbot', 'starter-phrases.txt', 'icon.ico', 'icon.png', 'LICENSE.txt', 'README.txt')) {
+        foreach ($old in @('Hub.ps1', 'Uninstall.ps1', 'web', 'streamerbot', 'starter-phrases.txt', 'icon.ico', 'icon.png', 'browser-connector.user.js', 'LICENSE.txt', 'README.txt', 'INSTALL.txt')) {
             $p = Join-Path $dir $old
             if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force }
         }
@@ -81,10 +86,16 @@ function Install-Hub([string]$dir, [bool]$desktop, [bool]$autostart, [bool]$laun
     $uninst = Join-Path $dir 'Uninstall.ps1'
 
     & $step 'Making shortcuts...'
+    # Version 1.1.0 and older used a Start menu folder and desktop shortcut called "AOverlay Hub": replace them.
+    if (Test-Path -LiteralPath $OldStartMenuDir) {
+        foreach ($n in @("$AppTitle.lnk", "Uninstall $AppTitle.lnk")) { Remove-Item -LiteralPath (Join-Path $OldStartMenuDir $n) -Force -ErrorAction SilentlyContinue }
+        if (-not @(Get-ChildItem -LiteralPath $OldStartMenuDir -Force -ErrorAction SilentlyContinue).Count) { Remove-Item -LiteralPath $OldStartMenuDir -Force -ErrorAction SilentlyContinue }
+    }
+    Remove-Item -LiteralPath $OldDesktopLink -Force -ErrorAction SilentlyContinue
     [void](New-Item -ItemType Directory -Force -Path $StartMenuDir)
-    New-Shortcut (Join-Path $StartMenuDir "$AppTitle.lnk") $hub '' 'Open the AOverlay Hub control panel' $ico
-    New-Shortcut (Join-Path $StartMenuDir "Uninstall $AppTitle.lnk") $uninst '' "Remove $AppTitle" $ico
-    if ($desktop) { New-Shortcut $DesktopLink $hub '' 'Open the AOverlay Hub control panel' $ico }
+    New-Shortcut (Join-Path $StartMenuDir "$Launcher.lnk") $hub '' 'Open the AOverlay control panel (overlays, music, moderation)' $ico
+    New-Shortcut (Join-Path $StartMenuDir "Uninstall $Launcher.lnk") $uninst '' "Remove $AppTitle" $ico
+    if ($desktop) { New-Shortcut $DesktopLink $hub '' 'Open the AOverlay control panel (overlays, music, moderation)' $ico }
     elseif (Test-Path -LiteralPath $DesktopLink) { Remove-Item -LiteralPath $DesktopLink -Force }
 
     if ($autostart) {
@@ -143,7 +154,7 @@ if (Test-Path -LiteralPath $pngFile) { $pic.Image = [Drawing.Image]::FromFile($p
 $title = Add-Ctl 'Label' 100 22 440 30
 $title.Text = $AppTitle; $title.Font = New-Object Drawing.Font('Segoe UI', 16, [Drawing.FontStyle]::Bold)
 $sub = Add-Ctl 'Label' 100 56 440 40
-$sub.Text = 'All your stream overlays in one place, shown in OBS through one scene with one source.'
+$sub.Text = 'All your stream overlays in one place, including Now Playing, shown in OBS through one scene with one source.'
 
 $lblDir = Add-Ctl 'Label' 20 112 520 20; $lblDir.Text = 'Install folder:'
 $txtDir = Add-Ctl 'TextBox' 20 134 420 26; $txtDir.Text = $InstallDir
@@ -183,7 +194,7 @@ $btnInstall.Add_Click({
         $form.UseWaitCursor = $false
         $msg = "AOverlay Hub is installed.`n`n"
         if ($chkRun.Checked) { $msg += "Its control panel opens in your web browser now, with a setup wizard that also sets up OBS for you.`n`n" }
-        $msg += "Open it any time from the Start menu (AOverlay Hub). It shows an icon by the clock while it's running."
+        $msg += "Open it any time from the Start menu (AOverlay). It shows an icon by the clock while it's running.`n`nIt also finds the song that's playing (VLC, Spotify, Suno, SoundCloud) by itself, so you don't need any other music program."
         [void][Windows.Forms.MessageBox]::Show($msg, $AppTitle, 'OK', 'Information')
         $form.Close()
     } catch {

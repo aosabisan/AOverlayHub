@@ -7,8 +7,12 @@ param([switch]$Silent, [switch]$RemoveSettings, [string]$Dir = '', [switch]$From
 $AppTitle = 'AOverlay Hub'
 $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AOverlayHub'
 $RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-$StartMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) $AppTitle
-$DesktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) "$AppTitle.lnk"
+$Launcher = 'AOverlay'
+$StartMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) $Launcher
+$DesktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) "$Launcher.lnk"
+# What version 1.1.0 and older made.
+$OldStartMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) $AppTitle
+$OldDesktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) "$AppTitle.lnk"
 $DataDir = Join-Path $env:APPDATA $AppTitle
 $PowerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 if (-not $Dir) { $Dir = Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -52,8 +56,13 @@ for ($i = 0; $i -lt 20; $i++) {
 }
 
 Remove-ItemProperty -Path $RunKey -Name 'AOverlayHub' -ErrorAction SilentlyContinue
-if (Test-Path -LiteralPath $StartMenuDir) { Remove-Item -LiteralPath $StartMenuDir -Recurse -Force -ErrorAction SilentlyContinue }
-if (Test-Path -LiteralPath $DesktopLink) { Remove-Item -LiteralPath $DesktopLink -Force -ErrorAction SilentlyContinue }
+# Remove only our own shortcuts, then the folders if nothing else is left in them.
+foreach ($pair in @(@($StartMenuDir, @("$Launcher.lnk", "Uninstall $Launcher.lnk")), @($OldStartMenuDir, @("$AppTitle.lnk", "Uninstall $AppTitle.lnk")))) {
+    if (-not (Test-Path -LiteralPath $pair[0])) { continue }
+    foreach ($n in $pair[1]) { Remove-Item -LiteralPath (Join-Path $pair[0] $n) -Force -ErrorAction SilentlyContinue }
+    if (-not @(Get-ChildItem -LiteralPath $pair[0] -Force -ErrorAction SilentlyContinue).Count) { Remove-Item -LiteralPath $pair[0] -Force -ErrorAction SilentlyContinue }
+}
+foreach ($l in @($DesktopLink, $OldDesktopLink)) { if (Test-Path -LiteralPath $l) { Remove-Item -LiteralPath $l -Force -ErrorAction SilentlyContinue } }
 Remove-Item -Path $UninstallKey -Recurse -Force -ErrorAction SilentlyContinue
 
 # Only remove the install folder if it really is AOverlay Hub's.

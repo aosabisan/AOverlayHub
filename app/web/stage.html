@@ -679,9 +679,9 @@
     function textFrom(r) {
       var s = o.settings, tracks = (r && r.tracks) || [];
       if (!tracks.length) return "";
-      var one = function (t) { return (s.showSource && t.source ? t.source + ": " : "") + t.name; };
-      if (tracks.length === 1) return one(tracks[0]);
-      return [s.multiText.replace(/\{count\}/g, String(tracks.length))].concat(tracks.map(one)).join("  •  ");
+      var one = function (t, many) { return (s.showSource && t.source && (many || s.showSourceSingle !== false) ? t.source + ": " : "") + t.name; };
+      if (tracks.length === 1) return one(tracks[0], false);
+      return [s.multiText.replace(/\{count\}/g, String(tracks.length))].concat(tracks.map(function (x) { return one(x, true); })).join(s.separator != null ? s.separator : "  \u2022  ");
     }
     function show(text) {
       var s = o.settings, H = s.orientation !== "vertical";

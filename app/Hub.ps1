@@ -13,7 +13,7 @@
 param([int]$Port = 0, [switch]$Background, [string]$DataDir = '', [switch]$NoTray)
 
 $ErrorActionPreference = 'Continue'
-$AppVersion = '1.1.0'
+$AppVersion = '1.1.1'
 $AppTitle = 'AOverlay Hub'
 $AppCredit = 'Aosabi 「青錆竜也」'
 $AppContact = 'aosabi@pm.me'
@@ -207,45 +207,448 @@ $script:LiveSeen = [long]0
 $script:LiveProfiles = @{}
 
 # ------------------------------------------------------------------ now playing
+# AOverlay finds the song itself, no other program needed:
+#   VLC (its web interface, or its title bar), the Spotify app and anything else Windows lists as playing,
+#   and Suno / Spotify's web player / SoundCloud in a browser (the browser connector makes those exact).
+# It only looks while a Now Playing overlay is being shown (or "write the song to a text file" is on).
+$script:MusicLast = [long]0
+$script:MusicWanted = [long]0
+$script:MusicTracks = New-Object System.Collections.ArrayList
+$script:MusicWindows = @()
+$script:MusicText = $null
+$script:MusicReady = $false
+$script:MusicVer = -1
+$script:MC = $null
+$script:Reports = @{}
+$script:ConnectorSeen = @{}      # site -> last time that site's connector reported
+$script:SmtcManager = $null
+$script:SmtcTried = [datetime]::MinValue
+$script:AsTaskGeneric = $null
+$script:VlcCfg = $null
+$script:VlcCfgTime = [datetime]::MinValue
+$MusicTextPath = Join-Path $DataDir 'nowplaying.txt'
+$ConnectorFile = Join-Path $AppDir 'browser-connector.user.js'
+$BrowserProcs = @('chrome', 'msedge', 'firefox', 'brave', 'opera', 'vivaldi', 'arc', 'zen', 'librewolf',
+                  'waterfox', 'floorp', 'thorium', 'chromium', 'iridium', 'browser')
+$MediaExt = '(?i)\.(mp3|flac|wav|m4a|aac|ogg|oga|opus|wma|alac|aif|aiff|ape|wv|mka|mp4|m4v|mkv|webm|avi|mov|wmv|flv|ts|mpg|mpeg|3gp)$'
+
+# The player switches, names and VLC details (More > Music in the control panel).
+function Get-MusicCfg {
+    $d = [ordered]@{ vlc = $true; suno = $true; spotify = $true; soundcloud = $true
+        vlcLabel = 'VLC'; sunoLabel = 'Suno'; spotifyLabel = 'Spotify'; soundcloudLabel = 'SoundCloud'
+        vlcPort = 0; vlcPassword = ''; showArtist = $true; writeFile = $false }
+    $m = $null; try { $m = $script:Config.music } catch {}
+    if ($m) {
+        foreach ($k in @($d.Keys)) {
+            $p = $m.PSObject.Properties[$k]
+            if ($p -ne $null -and $p.Value -ne $null) { try { $d[$k] = [Management.Automation.LanguagePrimitives]::ConvertTo($p.Value, $d[$k].GetType()) } catch {} }
+        }
+    }
+    return $d
+}
+
+function Initialize-MusicEngine {
+    if ($script:MusicReady) { return }
+    $script:MusicReady = $true
+    if (-not ('AOvWindows' -as [type])) {
+        try {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class AOvWindows {
+    private delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int max);
+    [DllImport("user32.dll")] private static extern int GetWindowTextLength(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+    public static List<KeyValuePair<int, string>> List() {
+        var result = new List<KeyValuePair<int, string>>();
+        EnumWindows(delegate (IntPtr h, IntPtr l) {
+            if (!IsWindowVisible(h)) return true;
+            int len = GetWindowTextLength(h);
+            if (len <= 0) return true;
+            var sb = new StringBuilder(len + 1);
+            GetWindowText(h, sb, sb.Capacity);
+            uint pid;
+            GetWindowThreadProcessId(h, out pid);
+            result.Add(new KeyValuePair<int, string>((int)pid, sb.ToString()));
+            return true;
+        }, IntPtr.Zero);
+        return result;
+    }
+}
+'@
+        } catch { Write-Log "Music: could not read the window list: $($_.Exception.Message)" }
+    }
+    Initialize-MediaSessions
+}
+
+# ---------- list of open windows (title + process) ----------
+function Get-WindowList {
+    $list = New-Object System.Collections.ArrayList
+    if (-not ('AOvWindows' -as [type])) { return ,$list }
+    $names = @{}
+    foreach ($kv in [AOvWindows]::List()) {
+        $id = $kv.Key
+        if (-not $names.ContainsKey($id)) {
+            try { $names[$id] = [Diagnostics.Process]::GetProcessById($id).ProcessName.ToLowerInvariant() } catch { $names[$id] = '' }
+        }
+        [void]$list.Add([pscustomobject]@{ Proc = $names[$id]; Title = $kv.Value })
+    }
+    return ,$list
+}
+
+# ---------- name clean-up ----------
+function Remove-MediaExtension([string]$name) {
+    if (-not $name) { return '' }
+    return ($name.Trim() -replace $MediaExt, '').Trim()
+}
+
+function Format-MusicTrack([string]$title, [string]$artist, [string]$fileName) {
+    $t = ''
+    if ($title) { $t = $title.Trim() }
+    if (-not $t -or ($fileName -and $t -eq $fileName.Trim())) { $t = $fileName }
+    $t = Remove-MediaExtension $t
+    if (-not $t) { return '' }
+    $a = ''
+    if ($artist) { $a = $artist.Trim() }
+    if ($script:MC.showArtist -and $a -and $t.IndexOf($a, [StringComparison]::OrdinalIgnoreCase) -lt 0) { return "$t - $a" }
+    return $t
+}
+
+# ---------- VLC ----------
+function Get-VlcConnection {
+    if (-not $script:VlcCfg -or ((Get-Date) - $script:VlcCfgTime).TotalSeconds -gt 20) {
+        $port = 8080; $pw = ''
+        $rc = Join-Path $env:APPDATA 'vlc\vlcrc'
+        if (Test-Path -LiteralPath $rc) {
+            try {
+                foreach ($line in [IO.File]::ReadAllLines($rc)) {
+                    if ($line -match '^\s*http-port\s*=\s*(\d+)') { $port = [int]$Matches[1] }
+                    elseif ($line -match '^\s*http-password\s*=\s*(.*)$') { $pw = $Matches[1].Trim() }
+                }
+            } catch {}
+        }
+        $script:VlcCfg = @{ Port = $port; Password = $pw }
+        $script:VlcCfgTime = Get-Date
+    }
+    $c = @{ Port = $script:VlcCfg.Port; Password = $script:VlcCfg.Password }
+    if ([int]$script:MC.vlcPort -gt 0) { $c.Port = [int]$script:MC.vlcPort }
+    if ($script:MC.vlcPassword) { $c.Password = [string]$script:MC.vlcPassword }
+    return $c
+}
+
+function Invoke-VlcStatus([int]$port, [string]$password) {
+    try {
+        $req = [Net.HttpWebRequest]::Create("http://127.0.0.1:$port/requests/status.json")
+        $req.Timeout = 700
+        $req.ReadWriteTimeout = 700
+        $req.Proxy = $null
+        $req.Headers['Authorization'] = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(":$password"))
+        $resp = $req.GetResponse()
+        try {
+            $reader = New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)
+            $txt = $reader.ReadToEnd()
+        } finally { $resp.Close() }
+        return ($txt | ConvertFrom-Json)
+    } catch { return $null }
+}
+
+function Get-VlcTrack($windows) {
+    $hasWindow = @($windows | Where-Object { $_.Proc -eq 'vlc' }).Count -gt 0
+    if (-not $hasWindow -and -not (Get-Process -Name vlc -ErrorAction SilentlyContinue)) { return '' }
+
+    # 1) VLC's web interface: knows title, artist and whether it is paused.
+    $c = Get-VlcConnection
+    if ($c.Password) {
+        $j = Invoke-VlcStatus $c.Port $c.Password
+        if ($j -ne $null) {
+            if ([string]$j.state -ne 'playing') { return '' }
+            $meta = $null
+            try { $meta = $j.information.category.meta } catch {}
+            if ($meta -eq $null) { return '' }
+            if ($meta.now_playing) { return ([string]$meta.now_playing).Trim() }   # internet radio
+            return (Format-MusicTrack ([string]$meta.title) ([string]$meta.artist) ([string]$meta.filename))
+        }
+    }
+
+    # 2) Backup: VLC's title bar, "Song name - VLC media player".
+    $tail = ' - VLC media player'
+    foreach ($w in $windows) {
+        if ($w.Proc -ne 'vlc') { continue }
+        if ($w.Title.EndsWith($tail)) {
+            $t = Remove-MediaExtension ($w.Title.Substring(0, $w.Title.Length - $tail.Length))
+            if ($t) { return $t }
+        }
+    }
+    return ''
+}
+
+# ---------- Windows media sessions (Spotify app, browsers, VLC 4) ----------
+function Wait-WinRt($op, [Type]$type) {
+    $task = $script:AsTaskGeneric.MakeGenericMethod($type).Invoke($null, @($op))
+    if (-not $task.Wait(2000)) { return $null }
+    return $task.Result
+}
+
+function Initialize-MediaSessions {
+    $script:SmtcTried = Get-Date
+    try {
+        Add-Type -AssemblyName System.Runtime.WindowsRuntime
+        $null = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]
+        $null = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties, Windows.Media.Control, ContentType = WindowsRuntime]
+        $script:AsTaskGeneric = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+            $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+            $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } | Select-Object -First 1
+        $script:SmtcManager = Wait-WinRt ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager])
+    } catch {
+        Write-Log "Music: Windows media sessions unavailable: $($_.Exception.Message)"
+    }
+}
+
+function Get-MediaSessions([switch]$All) {
+    $out = New-Object System.Collections.ArrayList
+    if ($script:SmtcManager -eq $null) { return ,$out }
+    $sessions = $null
+    try { $sessions = $script:SmtcManager.GetSessions() } catch { return ,$out }
+    foreach ($s in $sessions) {
+        try {
+            $status = [string]$s.GetPlaybackInfo().PlaybackStatus
+            if (-not $All -and $status -ne 'Playing') { continue }
+            $p = Wait-WinRt ($s.TryGetMediaPropertiesAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties])
+            $title = ''; $artist = ''
+            if ($p -ne $null) { $title = [string]$p.Title; $artist = [string]$p.Artist }
+            if (-not $All -and -not $title) { continue }
+            [void]$out.Add([pscustomobject]@{ App = [string]$s.SourceAppUserModelId; Status = $status; Title = $title; Artist = $artist })
+        } catch {}
+    }
+    return ,$out
+}
+
+# ---------- browser connector (Tampermonkey script on Suno, Spotify web and SoundCloud) ----------
+function Add-ConnectorReport([string]$body) {
+    try {
+        $r = $body | ConvertFrom-Json
+        $id = [string]$r.id
+        if (-not $id -or $id.Length -gt 80) { return }
+        $site = ([string]$r.site).ToLowerInvariant()
+        if (@('suno', 'spotify', 'soundcloud') -notcontains $site) { return }
+        $script:Reports[$id] = [pscustomobject]@{
+            Site = $site; Playing = [bool]$r.playing; Title = (Limit-Text $r.title 300); Artist = (Limit-Text $r.artist 200); Time = Get-Date }
+        $script:ConnectorSeen[$site] = Get-Date
+        $script:MusicWanted = Get-NowMs
+    } catch {}
+}
+
+function Test-ConnectorActive([string]$site = '') {
+    $now = Get-Date
+    foreach ($k in @($script:ConnectorSeen.Keys)) {
+        if ($site -and $k -ne $site) { continue }
+        if (($now - $script:ConnectorSeen[$k]).TotalSeconds -lt 600) { return $true }
+    }
+    return $false
+}
+
+function Get-ConnectorTracks([string]$site) {
+    $result = New-Object System.Collections.ArrayList
+    $now = Get-Date
+    foreach ($k in @($script:Reports.Keys)) {
+        $r = $script:Reports[$k]
+        $age = ($now - $r.Time).TotalSeconds
+        if ($age -gt 600) { $script:Reports.Remove($k); continue }
+        if ($r.Site -ne $site) { continue }
+        if ($r.Playing -and $age -lt 6 -and $r.Title) {
+            $name = Format-MusicTrack $r.Title $r.Artist ''
+            if ($name -and -not $result.Contains($name)) { [void]$result.Add($name) }
+        }
+    }
+    return ,$result
+}
+
+function Test-BrowserApp([string]$appId) {
+    if ($appId -match '^[0-9A-Fa-f]{16}$') { return $true }   # Firefox-family browsers
+    return ($appId -match '(?i)chrome|chromium|msedge|brave|opera|vivaldi|thebrowsercompany|firefox|librewolf|waterfox|floorp|thorium|yandex')
+}
+
+# Without the connector, browser songs are matched to a site by the open windows:
+#  - SoundCloud puts the song in its tab title, so a song shown in a SoundCloud window is SoundCloud.
+#  - Suno never puts the song in its tab title, so a browser song that is not the title of any open
+#    window counts as Suno when a Suno window is open.
+#  - Spotify's web player can only be read through the connector.
+function Get-BrowserSiteTracks($windows, $sessions) {
+    $out = @{ suno = (New-Object System.Collections.ArrayList); soundcloud = (New-Object System.Collections.ArrayList) }
+    $browserWins = @($windows | Where-Object { $BrowserProcs -contains $_.Proc })
+    $hasSuno = @($browserWins | Where-Object { $_.Title -match '(?i)\bsuno\b' }).Count -gt 0
+    foreach ($m in $sessions) {
+        if (-not (Test-BrowserApp $m.App)) { continue }
+        if (-not $m.Title) { continue }
+        $shownIn = @($browserWins | Where-Object { $_.Title.IndexOf($m.Title, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+        $site = $null
+        if ($shownIn.Count -gt 0) {
+            if (@($shownIn | Where-Object { $_.Title -match '(?i)soundcloud' }).Count -gt 0) { $site = 'soundcloud' }
+        } elseif ($hasSuno) { $site = 'suno' }
+        if (-not $site) { continue }
+        $name = Format-MusicTrack $m.Title $m.Artist ''
+        if ($name -and -not $out[$site].Contains($name)) { [void]$out[$site].Add($name) }
+    }
+    return $out
+}
+
+# Spotify's desktop app reports its song to Windows itself.
+function Get-SpotifyAppTrack($sessions) {
+    foreach ($m in $sessions) { if ($m.App -match '(?i)spotify' -and $m.Title) { return (Format-MusicTrack $m.Title $m.Artist '') } }
+    return ''
+}
+
+# ---------- put it together ----------
+function Add-MusicTrack($list, [string]$label, [string]$name) {
+    if (-not $name) { return }
+    foreach ($t in $list) { if ($t.name -eq $name -and $t.source -eq $label) { return } }
+    [void]$list.Add([ordered]@{ source = $label; name = $name })
+}
+
+function Get-MusicPlainText {
+    $n = $script:MusicTracks.Count
+    if ($n -eq 0) { return '' }
+    if ($n -eq 1) { return [string]$script:MusicTracks[0].name }
+    return ((@($script:MusicTracks | ForEach-Object { if ($_.source) { '{0}: {1}' -f $_.source, $_.name } else { $_.name } })) -join ' | ')
+}
+
+function Update-MusicNow {
+    Initialize-MusicEngine
+    $mc = Get-MusicCfg
+    $script:MC = $mc
+    if ($script:SmtcManager -eq $null -and ((Get-Date) - $script:SmtcTried).TotalSeconds -gt 30) { Initialize-MediaSessions }
+    $windows = Get-WindowList
+    $sessions = Get-MediaSessions
+    $tracks = New-Object System.Collections.ArrayList
+    $fallback = Get-BrowserSiteTracks $windows $sessions
+
+    if ($mc.vlc) {
+        $v = Get-VlcTrack $windows
+        if (-not $v) {
+            foreach ($m in $sessions) { if ($m.App -match '(?i)vlc' -and $m.Title) { $v = Format-MusicTrack $m.Title $m.Artist ''; break } }
+        }
+        Add-MusicTrack $tracks ([string]$mc.vlcLabel) $v
+    }
+    if ($mc.suno) {
+        # The browser connector is exact, so it wins for a site once it is installed there.
+        if (Test-ConnectorActive 'suno') { $list = Get-ConnectorTracks 'suno' } else { $list = $fallback['suno'] }
+        foreach ($n in $list) { Add-MusicTrack $tracks ([string]$mc.sunoLabel) $n }
+    }
+    if ($mc.spotify) {
+        Add-MusicTrack $tracks ([string]$mc.spotifyLabel) (Get-SpotifyAppTrack $sessions)
+        foreach ($n in (Get-ConnectorTracks 'spotify')) { Add-MusicTrack $tracks ([string]$mc.spotifyLabel) $n }
+    }
+    if ($mc.soundcloud) {
+        if (Test-ConnectorActive 'soundcloud') { $list = Get-ConnectorTracks 'soundcloud' } else { $list = $fallback['soundcloud'] }
+        foreach ($n in $list) { Add-MusicTrack $tracks ([string]$mc.soundcloudLabel) $n }
+    }
+    $script:MusicWindows = $windows
+    $script:MusicTracks = $tracks
+    if ($mc.writeFile) {
+        $text = Get-MusicPlainText
+        if ($text -ne $script:MusicText) {
+            try { [IO.File]::WriteAllText($MusicTextPath, $text, $Utf8); $script:MusicText = $text } catch {}
+        }
+    }
+}
+
+# Called about once a second by the main loop.
+function Invoke-MusicTick([switch]$Force) {
+    $now = Get-NowMs
+    $wanted = ($now - $script:MusicWanted) -lt 8000
+    if (-not $Force) {
+        if (-not $wanted -and -not (Get-MusicCfg).writeFile) { return }
+        if ($now - $script:MusicLast -lt 900) { return }
+    }
+    $script:MusicLast = $now
+    Update-MusicNow
+}
+
+function Get-MusicTracksJson {
+    return '{"ok":true,"tracks":' + (Get-Json $script:MusicTracks 3) + '}'
+}
+
+# What the helper can see, for troubleshooting (More > Music > "What can AOverlay see?").
+function Get-MusicDebugJson {
+    $script:MusicWanted = Get-NowMs
+    Invoke-MusicTick -Force
+    $c = Get-VlcConnection
+    $wins = @($script:MusicWindows | Where-Object { $BrowserProcs -contains $_.Proc -or $_.Proc -eq 'vlc' } |
+              ForEach-Object { [ordered]@{ process = $_.Proc; title = $_.Title } })
+    $sess = @()
+    foreach ($m in (Get-MediaSessions -All)) {
+        $sess += [ordered]@{ app = $m.App; status = $m.Status; title = $m.Title; artist = $m.Artist; isBrowser = (Test-BrowserApp $m.App) } }
+    $vlcState = ''
+    $vj = $null
+    if ($c.Password) { $vj = Invoke-VlcStatus $c.Port $c.Password }
+    if ($vj -ne $null) { $vlcState = [string]$vj.state }
+    $reports = @($script:Reports.Keys | ForEach-Object {
+        $r = $script:Reports[$_]
+        [ordered]@{ site = $r.Site; playing = $r.Playing; title = $r.Title; artist = $r.Artist; secondsAgo = [int]((Get-Date) - $r.Time).TotalSeconds } })
+    $sites = @(@('suno', 'spotify', 'soundcloud') | Where-Object { Test-ConnectorActive $_ })
+    $d = [ordered]@{
+        version          = $AppVersion
+        tracks           = @($script:MusicTracks.ToArray())
+        mediaSessionsOk  = ($script:SmtcManager -ne $null)
+        mediaSessions    = $sess
+        windows          = $wins
+        vlcRunning       = [bool](Get-Process -Name vlc -ErrorAction SilentlyContinue)
+        vlcWebPort       = $c.Port
+        vlcHasPassword   = [bool]$c.Password
+        vlcWebAnswers    = ($vj -ne $null)
+        vlcState         = $vlcState
+        connector        = (Test-ConnectorActive)
+        connectorSites   = $sites
+        connectorReports = $reports
+        textFile         = $MusicTextPath
+    }
+    return (Get-Json $d 5)
+}
+
+# The settings the older "AOverlay for Stream Music" program left on this computer, if any.
+function Get-OldMusicSettingsJson {
+    foreach ($name in @('AOverlayForStreamMusic', 'NowPlayingOverlay')) {
+        $t = Read-Text (Join-Path (Join-Path $env:APPDATA $name) 'settings.json')
+        if ($t) {
+            try { $null = ConvertFrom-Json $t; return '{"found":true,"settings":' + $t + '}' } catch {}
+        }
+    }
+    return '{"found":false}'
+}
+
 $script:MusicCache = @{}
 function Get-MusicJson([string]$id) {
     $o = Get-Overlay $id
     if (-not $o -or $o.type -ne 'music') { return '{"ok":false,"error":"not found"}' }
     $s = $o.settings
     $src = [string]$s.source
-    if ($src -eq 'aoverlay') {
-        $p = 8095; try { $p = [int]$s.aoverlayPort } catch {}
-        if ($p -lt 1 -or $p -gt 65535) { $p = 8095 }
-        $key = "ao:$p"
-    } elseif ($src -eq 'file') {
+    if ($src -eq 'file') {
         $key = 'file:' + [string]$s.filePath
-    } else { return '{"ok":true,"tracks":[]}' }
-    $now = Get-NowMs
-    $c = $script:MusicCache[$key]
-    if ($c -and ($now - $c.t) -lt 900) { return $c.json }
-    $json = '{"ok":true,"tracks":[]}'
-    try {
-        if ($src -eq 'aoverlay') {
-            $j = ConvertFrom-Json (Get-WebText ("http://localhost:$p/data") 1200)
-            $tracks = New-Object System.Collections.ArrayList
-            foreach ($t in @($j.tracks)) { if ($t -and $t.name) { [void]$tracks.Add([ordered]@{ source = [string]$t.source; name = [string]$t.name }) } }
-            $json = '{"ok":true,"tracks":' + (Get-Json $tracks 3) + '}'
-        } else {
-            $path = [string]$s.filePath
-            $text = Read-Text $path
-            if ($null -eq $text) { $json = '{"ok":false,"error":"file not found"}' }
-            else {
-                $line = ''
-                foreach ($l in ($text -split "`r?`n")) { if ($l.Trim()) { $line = $l.Trim(); break } }
-                if ($line.Length -gt 300) { $line = $line.Substring(0, 300) }
-                if ($line) { $json = '{"ok":true,"tracks":[' + (ConvertTo-Json -InputObject ([ordered]@{ source = ''; name = $line }) -Compress) + ']}' }
-            }
+        $now = Get-NowMs
+        $c = $script:MusicCache[$key]
+        if ($c -and ($now - $c.t) -lt 900) { return $c.json }
+        $json = '{"ok":true,"tracks":[]}'
+        $text = Read-Text ([string]$s.filePath)
+        if ($null -eq $text) { $json = '{"ok":false,"error":"file not found"}' }
+        else {
+            $line = ''
+            foreach ($l in ($text -split "`r?`n")) { if ($l.Trim()) { $line = $l.Trim(); break } }
+            if ($line.Length -gt 300) { $line = $line.Substring(0, 300) }
+            if ($line) { $json = '{"ok":true,"tracks":[' + (ConvertTo-Json -InputObject ([ordered]@{ source = ''; name = $line }) -Compress) + ']}' }
         }
-    } catch {
-        $json = '{"ok":false,"error":"not running"}'
+        $script:MusicCache[$key] = @{ t = $now; json = $json }
+        return $json
     }
-    $script:MusicCache[$key] = @{ t = $now; json = $json }
-    return $json
+    if ($src -eq 'off') { return '{"ok":true,"tracks":[]}' }
+    # "builtin" (and "aoverlay", the name 1.1.0 used for the separate program) is the built-in detection.
+    $script:MusicWanted = Get-NowMs
+    if ($script:MusicLast -eq 0) { Invoke-MusicTick -Force }
+    return (Get-MusicTracksJson)
 }
 
 # ------------------------------------------------------------------ Rumble (support, follows and chat)
@@ -490,7 +893,19 @@ function Get-FontsJson {
 $script:ModVer = $Base
 function New-ModSettings {
     return [ordered]@{ enabled = $true; action = 'timeout'; timeout = 600; reason = 'Spam message'; delete = $true; exemptMods = $true; exemptVip = $true
-        trustedAfter = 4; minLength = 12; learn = $true; announce = $true; commands = $true; kick = $true; twitch = $true; youtube = $true }
+        trustedAfter = 4; minLength = 12
+        learn = $true; learnMaxMessages = 4        # a ban adds the banned person's FIRST message when they sent fewer than this many in total
+        announce = $false; announceText = 'Banned message added to the spam phrase list. Mods can undo it with {undo}'
+        commands = $true; cmdAdd = '!addphrase'; cmdDel = '!delphrase'; cmdUndo = '!undophrase'; cmdMode = '!phrasemode'
+        kick = $true; twitch = $true; youtube = $true }
+}
+# A chat command word: no spaces, lower case, starts with "!" unless it starts with another symbol.
+function ConvertTo-CmdWord([string]$w, [string]$default) {
+    $w = (([string]$w) -replace '\s', '').ToLowerInvariant()
+    if ($w.Length -gt 30) { $w = $w.Substring(0, 30) }
+    if ($w -match '^[\p{L}\p{N}]') { $w = '!' + $w }
+    if ($w.Length -lt 2) { return $default }
+    return $w
 }
 function ConvertTo-Norm([string]$s) {
     if (-not $s) { return '' }
@@ -516,6 +931,13 @@ function Set-ModSettings($from) {
     if (@('timeout', 'ban') -notcontains $d.action) { $d.action = 'timeout' }
     if ($d.timeout -lt 1) { $d.timeout = 1 }; if ($d.timeout -gt 1209600) { $d.timeout = 1209600 }
     $d.reason = Limit-Text $d.reason 200
+    if ($d.learnMaxMessages -lt 2) { $d.learnMaxMessages = 2 }; if ($d.learnMaxMessages -gt 1000) { $d.learnMaxMessages = 1000 }
+    $d.announceText = Limit-Text $d.announceText 300
+    if (-not $d.announceText) { $d.announceText = (New-ModSettings).announceText }
+    $def = New-ModSettings
+    foreach ($k in @('cmdAdd', 'cmdDel', 'cmdUndo', 'cmdMode')) { $d[$k] = ConvertTo-CmdWord $d[$k] $def[$k] }
+    # two commands with the same word would clash: go back to the standard words
+    if (@(@($d.cmdAdd, $d.cmdDel, $d.cmdUndo, $d.cmdMode) | Select-Object -Unique).Count -lt 4) { foreach ($k in @('cmdAdd', 'cmdDel', 'cmdUndo', 'cmdMode')) { $d[$k] = $def[$k] } }
     $script:ModSettings = $d
 }
 function Import-Mod {
@@ -526,9 +948,14 @@ function Import-Mod {
     if ($t) {
         try {
             $j = ConvertFrom-Json $t
-            if ($j.settings) { Set-ModSettings $j.settings }
+            if ($j.settings) {
+                Set-ModSettings $j.settings
+                # Settings from before 1.1.1 had "say so in chat" on by default: it is off by default now.
+                if ($null -eq $j.settings.PSObject.Properties['learnMaxMessages']) { $script:ModSettings.announce = $false }
+            }
             foreach ($p in @($j.phrases)) { if ($p -and $p.text) { [void]$script:ModPhrases.Add($p) } }
             foreach ($l in @($j.log)) { if ($l) { [void]$script:ModLog.Add($l) } }
+            Save-Mod
             return
         } catch { Write-Log "Could not read moderation.json: $($_.Exception.Message)" }
     }
@@ -586,7 +1013,7 @@ function Invoke-ModCommand($b) {
     if ($cmd -eq '!addphrase') {
         $res = Add-ModPhrase $text 'mod' $by $plat $true
         if ($res -eq 'short') { return "That phrase is too short to add ($($script:ModSettings.minLength) letters minimum)." }
-        if ($res -eq 'empty') { return 'Type the phrase after !addphrase.' }
+        if ($res -eq 'empty') { return 'Type the phrase after ' + $script:ModSettings.cmdAdd + '.' }
         Save-Mod; return 'Spam phrase added.'
     }
     if ($cmd -eq '!delphrase') {
@@ -790,10 +1217,17 @@ function Invoke-Request($ctx) {
         }
         '^/api/music$' { Send-Json $ctx (Get-MusicJson ([string]$req.QueryString['id'])); return }
         '^/api/fonts$' { Send-Json $ctx (Get-FontsJson); return }
-        '^/api/probe-aoverlay$' {
-            $p = 8095; try { $p = [int]$req.QueryString['port'] } catch {}
-            $ok = $false; try { $j = ConvertFrom-Json (Get-WebText ("http://localhost:$p/data") 1500); $ok = [bool]$j.ok } catch {}
-            Send-Json $ctx ('{"ok":' + ([string]$ok).ToLower() + '}'); return
+        '^/api/music/debug$' { Send-Json $ctx (Get-MusicDebugJson); return }
+        '^/api/music/old-settings$' { Send-Json $ctx (Get-OldMusicSettingsJson); return }
+        '^/api/music/report$' {
+            # The browser connector (a Tampermonkey script) tells us what Suno, Spotify web or SoundCloud is playing.
+            if ($method -eq 'POST') { $b = Read-Body $req; if ($b.Length -lt 4000) { Add-ConnectorReport $b } }
+            Send-Text $ctx 200 'text/plain' 'ok'; return
+        }
+        '^/browser-connector\.user\.js$' {
+            if (-not (Test-Path -LiteralPath $ConnectorFile)) { Send-Text $ctx 404 'text/plain' 'The browser connector file is missing.'; return }
+            $js = (Read-Text $ConnectorFile) -replace '__PORT__', [string]$script:Port
+            Send-Text $ctx 200 'text/javascript; charset=utf-8' $js; return
         }
         '^/api/kick-lookup$' {
             $ch = ([string]$req.QueryString['channel']).Trim().ToLower()
@@ -846,12 +1280,20 @@ function Invoke-Request($ctx) {
         '^/api/mod/learn$' {
             $b = Read-BodyJson $req
             $added = $false
+            $say = ''
             if ($b -and $script:ModSettings.learn) {
-                $r = Add-ModPhrase ([string]$b.text) 'learned' ([string]$b.user) ([string]$b.platform) $true
-                if ($r -eq 'added') { $added = $true; Save-Mod }
+                # The rule: the banned person's FIRST message is learned, but only if they had sent
+                # fewer than "learnMaxMessages" chat messages in total (a typical spam bot).
+                $cnt = -1; try { $cnt = [int]$b.count } catch {}
+                if ($cnt -ge 0 -and $cnt -lt $script:ModSettings.learnMaxMessages) {
+                    $r = Add-ModPhrase ([string]$b.text) 'learned' ([string]$b.user) ([string]$b.platform) $true
+                    if ($r -eq 'added') {
+                        $added = $true; Save-Mod
+                        if ($script:ModSettings.announce) { $say = ([string]$script:ModSettings.announceText).Replace('{undo}', $script:ModSettings.cmdUndo).Replace('{user}', [string]$b.user) }
+                    }
+                }
             }
-            $ann = $added -and $script:ModSettings.announce
-            Send-Json $ctx ('{"ok":true,"added":' + ([string]$added).ToLower() + ',"announce":' + ([string]$ann).ToLower() + '}'); return
+            Send-Json $ctx ('{"ok":true,"added":' + ([string]$added).ToLower() + ',"say":' + (Get-JsonString $say) + '}'); return
         }
         '^/api/mod/log$' {
             $b = Read-BodyJson $req
@@ -934,6 +1376,8 @@ if (-not $NoTray) {
         $menu = New-Object Windows.Forms.ContextMenuStrip
         $miOpen = $menu.Items.Add('Open control panel')
         $miOpen.Add_Click({ Start-Process $PanelUrl })
+        $miMusic = $menu.Items.Add('Music settings')
+        $miMusic.Add_Click({ Start-Process ($PanelUrl + '#music') })
         $miFolder = $menu.Items.Add('Open settings folder')
         $miFolder.Add_Click({ Start-Process explorer.exe $DataDir })
         [void]$menu.Items.Add('-')
@@ -964,7 +1408,7 @@ while ($script:Running) {
             if ($ctx) { try { Invoke-Request $ctx } catch { Write-Log "Request failed: $($_.Exception.Message)"; try { $ctx.Response.Close() } catch {} } }
         }
         $now = Get-NowMs
-        if ($now - $lastTimers -ge 1000) { $lastTimers = $now; try { Invoke-RumbleChecks } catch {} }
+        if ($now - $lastTimers -ge 1000) { $lastTimers = $now; try { Invoke-RumbleChecks } catch {}; try { Invoke-MusicTick } catch { Write-Log "Music: $($_.Exception.Message)" } }
         try { Update-Sse } catch { Write-Log "Rumble live chat: $($_.Exception.Message)" }
         if ($tray) { [Windows.Forms.Application]::DoEvents() }
     } catch { Write-Log "Loop error: $($_.Exception.Message)"; Start-Sleep -Milliseconds 200 }
